@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '../utils/api';
+import { api, hiveApi } from '../utils/api';
 import { useAuth } from '../contexts/AuthContext';
 import Header from '../components/Header';
 import {
@@ -17,6 +17,12 @@ import {
     Shield,
     ScrollText,
     ChevronRight,
+    Box,
+    Image as ImageIcon,
+    Thermometer,
+    Droplets,
+    Scale,
+    ChevronLeft,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 
@@ -26,6 +32,11 @@ function Dashboard() {
     const [loading, setLoading] = useState(false);
     const [newItem, setNewItem] = useState({ name: '', description: '' });
     const [lastResponse, setLastResponse] = useState(null);
+
+    const [hives, setHives] = useState([]);
+    const [hivesLoading, setHivesLoading] = useState(false);
+    const [hivesPage, setHivesPage] = useState(1);
+    const [hivesTotal, setHivesTotal] = useState(0);
 
     const canRead = hasPermission('read');
     const canCreate = hasPermission('create');
@@ -51,9 +62,31 @@ function Dashboard() {
         }
     };
 
+    const fetchHives = async () => {
+        if (!canRead) return;
+        setHivesLoading(true);
+        try {
+            const response = await hiveApi.list({ page: hivesPage, size: 6 });
+            setHives(response.data.items);
+            setHivesTotal(response.data.total);
+        } catch (error) {
+            if (error.response?.status !== 403) {
+                toast.error('获取蜂箱列表失败');
+            }
+        } finally {
+            setHivesLoading(false);
+        }
+    };
+
     useEffect(() => {
         fetchItems();
     }, []);
+
+    useEffect(() => {
+        if (canRead) {
+            fetchHives();
+        }
+    }, [hivesPage, canRead]);
 
     const handleApiCall = async (type) => {
         setLoading(true);
@@ -180,8 +213,143 @@ function Dashboard() {
                                 <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-amber-400 transition-colors" />
                             </Link>
                         )}
+                        {canRead && (
+                            <Link
+                                to="/hives/1"
+                                className="group flex flex-col items-center gap-3 p-5 rounded-2xl bg-slate-800/50 hover:bg-blue-500/10 border border-slate-700 hover:border-blue-500/30 transition-all"
+                            >
+                                <div className="p-3 bg-blue-500/20 rounded-xl group-hover:scale-110 transition-transform">
+                                    <ImageIcon className="w-6 h-6 text-blue-400" />
+                                </div>
+                                <div className="text-center">
+                                    <p className="font-medium text-white">照片墙演示</p>
+                                    <p className="text-xs text-slate-500 mt-1">蜂群照片 · 巡检附件</p>
+                                </div>
+                                <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-blue-400 transition-colors" />
+                            </Link>
+                        )}
                     </div>
                 </section>
+
+                {/* 蜂箱列表 */}
+                {canRead && (
+                    <section className="glass-card rounded-3xl p-6">
+                    <div className="flex items-center justify-between mb-5">
+                        <div className="flex items-center gap-2">
+                            <Box className="w-5 h-5 text-emerald-400" />
+                            <h2 className="text-xl font-semibold text-white">蜂箱档案</h2>
+                        </div>
+                        <span className="text-sm text-slate-400">
+                            共 <span className="text-white font-medium">{hivesTotal}</span> 个蜂箱
+                        </span>
+                    </div>
+
+                    {hivesLoading ? (
+                        <div className="flex items-center justify-center py-12">
+                            <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                        </div>
+                    ) : hives.length > 0 ? (
+                        <>
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                {hives.map((hive) => (
+                                    <Link
+                                        key={hive.id}
+                                        to={`/hives/${hive.id}`}
+                                        className="group p-4 rounded-2xl bg-slate-800/50 hover:bg-slate-800 border border-slate-700 hover:border-emerald-500/30 transition-all"
+                                    >
+                                        <div className="flex items-center justify-between mb-3">
+                                            <div className="flex items-center gap-2">
+                                            <div className="p-2 bg-amber-500/20 rounded-lg">
+                                                <Box className="w-5 h-5 text-amber-400" />
+                                            </div>
+                                            <div>
+                                                <p className="font-medium text-white">{hive.hive_code}</p>
+                                                <p className="text-xs text-slate-500">{hive.apiary_id}</p>
+                                            </div>
+                                        </div>
+                                        <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                                            hive.status === 'active'
+                                                ? 'bg-green-500/20 text-green-400'
+                                                : 'bg-slate-500/20 text-slate-400'
+                                        }`}>
+                                            {hive.status === 'active' ? '运行中' : '已退役'}
+                                        </span>
+                                    </div>
+
+                                        <div className="grid grid-cols-3 gap-2 text-center">
+                                            <div className="bg-slate-700/30 rounded-lg p-2">
+                                                <Thermometer className="w-4 h-4 text-orange-400 mx-auto mb-1" />
+                                                <p className="text-sm font-medium text-white">
+                                                    {hive.temperature !== null && hive.temperature !== undefined
+                                                        ? `${hive.temperature}℃`
+                                                        : '-'}
+                                                </p>
+                                                <p className="text-xs text-slate-500">温度</p>
+                                            </div>
+                                            <div className="bg-slate-700/30 rounded-lg p-2">
+                                                <Droplets className="w-4 h-4 text-blue-400 mx-auto mb-1" />
+                                                <p className="text-sm font-medium text-white">
+                                                    {hive.humidity !== null && hive.humidity !== undefined
+                                                        ? `${hive.humidity}%`
+                                                        : '-'}
+                                                </p>
+                                                <p className="text-xs text-slate-500">湿度</p>
+                                            </div>
+                                            <div className="bg-slate-700/30 rounded-lg p-2">
+                                                <Scale className="w-4 h-4 text-emerald-400 mx-auto mb-1" />
+                                                <p className="text-sm font-medium text-white">
+                                                    {hive.weight !== null && hive.weight !== undefined
+                                                        ? `${hive.weight}kg`
+                                                        : '-'}
+                                                </p>
+                                                <p className="text-xs text-slate-500">重量</p>
+                                            </div>
+                                        </div>
+
+                                        <div className="mt-3 pt-3 border-t border-slate-700/50 flex items-center justify-between">
+                                            <span className="text-xs text-slate-500">
+                                                {hive.strength_level_name || '-'}群势
+                                            </span>
+                                            <span className="text-xs text-emerald-400 group-hover:translate-x-1 transition-transform flex items-center gap-1">
+                                                查看详情
+                                                <ChevronRight className="w-3 h-3" />
+                                            </span>
+                                        </div>
+                                    </Link>
+                                ))}
+                            </div>
+
+                            {hivesTotal > 6 && (
+                                <div className="flex items-center justify-center gap-2 mt-5 pt-4 border-t border-slate-700/50">
+                                    <button
+                                        onClick={() => setHivesPage((p) => Math.max(1, p - 1))}
+                                        disabled={hivesPage <= 1}
+                                        className="p-2 rounded-lg bg-slate-800 border border-slate-700 hover:border-slate-600 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                        <ChevronLeft className="w-4 h-4 text-slate-400" />
+                                    </button>
+                                    <span className="text-sm text-slate-400">
+                                        第 <span className="text-white">{hivesPage}</span> 页
+                                    </span>
+                                    <button
+                                        onClick={() => setHivesPage((p) => p + 1)}
+                                        disabled={hivesPage * 6 >= hivesTotal}
+                                        className="p-2 rounded-lg bg-slate-800 border border-slate-700 hover:border-slate-600 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                        <ChevronRight className="w-4 h-4 text-slate-400" />
+                                    </button>
+                                </div>
+                            )}
+                        </>
+                    ) : (
+                        <div className="flex flex-col items-center justify-center py-12 text-center">
+                            <Box className="w-12 h-12 text-slate-600 mb-3" />
+                            <p className="text-slate-400">暂无蜂箱数据</p>
+                            <p className="text-xs text-slate-600 mt-1">系统初始化后将显示蜂箱列表</p>
+                        </div>
+                    )}
+                </section>
+            )}
 
                 {/* Dash Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

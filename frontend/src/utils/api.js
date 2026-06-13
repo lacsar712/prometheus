@@ -122,5 +122,43 @@ export const authApi = {
         api.post('/api/auth/refresh', { refresh_token: refreshToken }),
 };
 
+export const hiveApi = {
+    list: (params) => api.get('/api/hives', { params }),
+    get: (id) => api.get(`/api/hives/${id}`),
+    create: (data) => api.post('/api/hives', data),
+    update: (id, data) => api.put(`/api/hives/${id}`, data),
+    open: (id, notes) => api.post(`/api/hives/${id}/open`, { notes }),
+    harvest: (id, data) => api.post(`/api/hives/${id}/harvest`, data),
+    queenChange: (id, data) => api.post(`/api/hives/${id}/queen-change`, data),
+    relocate: (id, data) => api.post(`/api/hives/${id}/relocate`, data),
+    retire: (id, data) => api.post(`/api/hives/${id}/retire`, data),
+};
+
+export const attachmentApi = {
+    list: (hiveId, params) => api.get(`/api/hives/${hiveId}/attachments`, { params }),
+    upload: (hiveId, formData, onProgress) =>
+        api.post(`/api/hives/${hiveId}/attachments`, formData, {
+            onUploadProgress: onProgress
+                ? (progressEvent) => {
+                      const percentCompleted = Math.round(
+                          (progressEvent.loaded * 100) / progressEvent.total
+                      );
+                      onProgress(percentCompleted);
+                  }
+                : undefined,
+        }),
+    remove: (id) => api.delete(`/api/hives/attachments/${id}`),
+    getDownloadUrl: (id) => `${API_BASE_URL}/api/hives/attachments/${id}/download`,
+};
+
+export const operationLogApi = {
+    list: (params) => api.get('/api/operation-logs', { params }),
+    get: (id) => api.get(`/api/operation-logs/${id}`),
+    exportCsv: (params) =>
+        api.get('/api/operation-logs/export/csv', { params, responseType: 'blob' }),
+    getOperators: () => api.get('/api/operation-logs/meta/operators'),
+    getOperationTypes: () => api.get('/api/operation-logs/meta/operation-types'),
+};
+
 export { api, API_BASE_URL, TOKEN_KEY, REFRESH_TOKEN_KEY, clearAuthAndRedirect };
 export default api;

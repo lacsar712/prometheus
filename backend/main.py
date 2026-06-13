@@ -8,11 +8,11 @@ from datetime import datetime, timedelta
 from enum import Enum as PyEnum
 from typing import Optional, List
 
-from fastapi import FastAPI, HTTPException, Request, Depends, status
+from fastapi import FastAPI, HTTPException, Request, Depends, status, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from prometheus_fastapi_instrumentator import Instrumentator
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum, Text, Float, ForeignKey, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum, Text, Float, ForeignKey, Boolean, case
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from pydantic import BaseModel, EmailStr, Field, validator
@@ -94,6 +94,20 @@ OPERATION_TYPE_NAMES = {
     HiveOperationType.INSPECTION: "巡检",
 }
 
+# 媒体类型枚举
+class MediaType(str, PyEnum):
+    IMAGE = "image"
+    VIDEO = "video"
+
+MEDIA_TYPE_NAMES = {
+    MediaType.IMAGE: "图片",
+    MediaType.VIDEO: "视频",
+}
+
+ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "bmp"}
+ALLOWED_VIDEO_EXTENSIONS = {"mp4", "mov", "avi", "webm", "mkv"}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
 # 群势等级
 class StrengthLevel(str, PyEnum):
     WEAK = "weak"           # 弱
@@ -145,6 +159,7 @@ class Beehive(Base):
     retired_at = Column(DateTime, nullable=True)  # 退役时间
 
     operation_logs = relationship("BeehiveOperationLog", back_populates="beehive")
+    attachments = relationship("BeehiveAttachment", back_populates="beehive", cascade="all, delete-orphan")
 
 class BeehiveOperationLog(Base):
     __tablename__ = "beehive_operation_logs"
@@ -160,6 +175,26 @@ class BeehiveOperationLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)  # 操作时间
 
     beehive = relationship("Beehive", back_populates="operation_logs")
+
+class BeehiveAttachment(Base):
+    __tablename__ = "beehive_attachments"
+    id = Column(Integer, primary_key=True, index=True)
+    hive_id = Column(Integer, ForeignKey("beehives.id"), nullable=False, index=True)
+    hive_code = Column(String(50), index=True, nullable=False)
+    uploader_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    uploader_username = Column(String(50), nullable=False)
+    file_key = Column(String(255), unique=True, nullable=False)
+    file_name = Column(String(255), nullable=False)
+    media_type = Column(Enum(MediaType), nullable=False, index=True)
+    file_size = Column(Integer, nullable=False)
+    mime_type = Column(String(100), nullable=True)
+    shot_at = Column(DateTime, nullable=True, index=True)
+    tags = Column(Text, nullable=False, default="[]")
+    description = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    beehive = relationship("Beehive", back_populates="attachments")
+    uploader = relationship("User")
 
 # Pydantic 模型
 class Token(BaseModel):
@@ -289,6 +324,44 @@ class OperationLogListResponse(BaseModel):
     total: int
     page: int
     size: int
+
+# ========== 附件相关 Pydantic 模型 ==========
+class AttachmentResponse(BaseModel):
+    id: int
+    hive_id: int
+    hive_code: str
+    uploader_id: int
+    uploader_username: str
+    file_key: str
+    file_name: str
+    media_type: MediaType
+    media_type_name: str
+    file_size: int
+    file_size_human: str
+    mime_type: Optional[str]
+    shot_at: Optional[datetime]
+    tags: List[str]
+    description: Optional[str]
+    download_url: str
+    thumbnail_url: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class AttachmentListResponse(BaseModel):
+    items: List[AttachmentResponse]
+    total: int
+    page: int
+    size: int
+    months: List[str] = []
+
+class AttachmentUploadResponse(BaseModel):
+    id: int
+    file_name: str
+    media_type: MediaType
+    file_size: int
+    message: str
 
 # ========== 操作请求模型 ==========
 class OpenBoxRequest(BaseModel):
@@ -456,6 +529,108 @@ def get_client_ip(request: Request) -> str:
         return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
+# ========== MinIO 对象存储服务 ==========
+from minio import Minio
+from minio.error import S3Error
+
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
+MINIO_BUCKET = os.getenv("MINIO_BUCKET", "beehive-attachments")
+MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
+PRESIGNED_URL_EXPIRY = 3600  # 1小时
+
+_minio_client = None
+
+def get_minio_client() -> Minio:
+    global _minio_client
+    if _minio_client is None:
+        _minio_client = Minio(
+            MINIO_ENDPOINT,
+            access_key=MINIO_ACCESS_KEY,
+            secret_key=MINIO_SECRET_KEY,
+            secure=MINIO_SECURE,
+        )
+    return _minio_client
+
+def init_minio_bucket():
+    try:
+        client = get_minio_client()
+        if not client.bucket_exists(MINIO_BUCKET):
+            client.make_bucket(MINIO_BUCKET)
+            logger.info(f"MinIO bucket '{MINIO_BUCKET}' created.")
+        else:
+            logger.info(f"MinIO bucket '{MINIO_BUCKET}' already exists.")
+    except Exception as e:
+        logger.error(f"Failed to initialize MinIO bucket: {e}")
+
+def get_file_extension(filename: str) -> str:
+    return filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+def detect_media_type(filename: str) -> Optional[MediaType]:
+    ext = get_file_extension(filename)
+    if ext in ALLOWED_IMAGE_EXTENSIONS:
+        return MediaType.IMAGE
+    if ext in ALLOWED_VIDEO_EXTENSIONS:
+        return MediaType.VIDEO
+    return None
+
+def generate_file_key(hive_code: str, media_type: MediaType, filename: str) -> str:
+    import uuid
+    ext = get_file_extension(filename)
+    unique_id = uuid.uuid4().hex[:12]
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    return f"{hive_code}/{media_type.value}/{timestamp}_{unique_id}.{ext}"
+
+def human_readable_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    else:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+def get_presigned_download_url(file_key: str) -> str:
+    try:
+        client = get_minio_client()
+        url = client.presigned_get_object(MINIO_BUCKET, file_key, expires=PRESIGNED_URL_EXPIRY)
+        return url
+    except Exception as e:
+        logger.error(f"Failed to generate presigned URL for {file_key}: {e}")
+        return ""
+
+def parse_tags(tags_str: Optional[str]) -> List[str]:
+    if not tags_str:
+        return []
+    try:
+        return json.loads(tags_str)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+def get_attachment_response_model(att: BeehiveAttachment) -> AttachmentResponse:
+    download_url = get_presigned_download_url(att.file_key)
+    thumbnail_url = download_url if att.media_type == MediaType.IMAGE else None
+    return AttachmentResponse(
+        id=att.id,
+        hive_id=att.hive_id,
+        hive_code=att.hive_code,
+        uploader_id=att.uploader_id,
+        uploader_username=att.uploader_username,
+        file_key=att.file_key,
+        file_name=att.file_name,
+        media_type=att.media_type,
+        media_type_name=MEDIA_TYPE_NAMES.get(att.media_type, str(att.media_type)),
+        file_size=att.file_size,
+        file_size_human=human_readable_size(att.file_size),
+        mime_type=att.mime_type,
+        shot_at=att.shot_at,
+        tags=parse_tags(att.tags),
+        description=att.description,
+        download_url=download_url,
+        thumbnail_url=thumbnail_url,
+        created_at=att.created_at,
+    )
+
 # 依赖项：获取当前登录用户
 async def get_current_user(
     token: Optional[str] = Depends(oauth2_scheme),
@@ -527,6 +702,18 @@ def init_db():
             retries -= 1
             time.sleep(5)
 
+# 初始化 MinIO
+def init_storage():
+    retries = 5
+    while retries > 0:
+        try:
+            init_minio_bucket()
+            break
+        except Exception as e:
+            logger.error(f"MinIO initialization failed: {e}. Retrying in 5 seconds...")
+            retries -= 1
+            time.sleep(5)
+
 app = FastAPI(title="FastAPI Prometheus Demo")
 
 # CORS 配置
@@ -559,6 +746,7 @@ instrumentator.instrument(app).expose(app)
 @app.on_event("startup")
 async def startup_event():
     init_db()
+    init_storage()
     logger.info("Application started.")
 
 @app.get("/")
@@ -1218,6 +1406,215 @@ async def get_operation_types_list(
         {"value": op.value, "label": name}
         for op, name in OPERATION_TYPE_NAMES.items()
     ]
+
+# ============ 蜂箱附件管理接口 ============
+
+@app.get("/api/hives/{hive_id}/attachments", response_model=AttachmentListResponse)
+async def list_hive_attachments(
+    hive_id: int,
+    page: int = 1,
+    size: int = 20,
+    media_type: Optional[str] = None,
+    month: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """分页获取蜂箱附件列表，含临时下载链接"""
+    hive = db.query(Beehive).filter(Beehive.id == hive_id).first()
+    if not hive:
+        raise HTTPException(status_code=404, detail="蜂箱不存在")
+
+    query = db.query(BeehiveAttachment).filter(BeehiveAttachment.hive_id == hive_id)
+
+    if media_type:
+        query = query.filter(BeehiveAttachment.media_type == media_type)
+
+    if month:
+        try:
+            year, mon = month.split("-")
+            start_date = datetime(int(year), int(mon), 1)
+            if int(mon) == 12:
+                end_date = datetime(int(year) + 1, 1, 1)
+            else:
+                end_date = datetime(int(year), int(mon) + 1, 1)
+            query = query.filter(
+                BeehiveAttachment.shot_at >= start_date,
+                BeehiveAttachment.shot_at < end_date,
+            )
+        except (ValueError, TypeError):
+            pass
+
+    total = query.count()
+    query = query.order_by(
+        case(
+            (BeehiveAttachment.shot_at.is_(None), 1),
+            else_=0
+        ).asc(),
+        BeehiveAttachment.shot_at.desc(),
+        BeehiveAttachment.created_at.desc()
+    )
+    offset = (page - 1) * size
+    items = query.offset(offset).limit(size).all()
+
+    months_query = db.query(BeehiveAttachment).filter(BeehiveAttachment.hive_id == hive_id)
+    all_atts = months_query.order_by(
+        case(
+            (BeehiveAttachment.shot_at.is_(None), 1),
+            else_=0
+        ).asc(),
+        BeehiveAttachment.shot_at.desc(),
+        BeehiveAttachment.created_at.desc()
+    ).all()
+    month_set = set()
+    for att in all_atts:
+        if att.shot_at:
+            month_set.add(att.shot_at.strftime("%Y-%m"))
+    months = sorted(list(month_set), reverse=True)
+
+    return AttachmentListResponse(
+        items=[get_attachment_response_model(att) for att in items],
+        total=total,
+        page=page,
+        size=size,
+        months=months,
+    )
+
+@app.post("/api/hives/{hive_id}/attachments", response_model=AttachmentUploadResponse, status_code=status.HTTP_201_CREATED)
+async def upload_hive_attachment(
+    hive_id: int,
+    file: UploadFile = File(...),
+    description: Optional[str] = Form(None),
+    tags: Optional[str] = Form(None),
+    shot_at: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["create"])),
+):
+    """上传蜂箱附件（单文件，不超过10MB）"""
+    hive = db.query(Beehive).filter(Beehive.id == hive_id).first()
+    if not hive:
+        raise HTTPException(status_code=404, detail="蜂箱不存在")
+
+    media_type = detect_media_type(file.filename or "")
+    if not media_type:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件类型。支持的图片格式: {', '.join(ALLOWED_IMAGE_EXTENSIONS)}，视频格式: {', '.join(ALLOWED_VIDEO_EXTENSIONS)}",
+        )
+
+    file_content = await file.read()
+    file_size = len(file_content)
+
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件大小超过限制，最大支持 {MAX_FILE_SIZE // (1024*1024)}MB",
+        )
+
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="文件不能为空")
+
+    file_key = generate_file_key(hive.hive_code, media_type, file.filename or "unknown")
+
+    try:
+        client = get_minio_client()
+        import io as _io
+        client.put_object(
+            MINIO_BUCKET,
+            file_key,
+            _io.BytesIO(file_content),
+            file_size,
+            content_type=file.content_type,
+        )
+    except Exception as e:
+        logger.error(f"Failed to upload file to MinIO: {e}")
+        raise HTTPException(status_code=500, detail="文件存储失败")
+
+    tag_list = []
+    if tags:
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+
+    shot_at_dt = None
+    if shot_at:
+        try:
+            shot_at_dt = datetime.fromisoformat(shot_at)
+        except (ValueError, TypeError):
+            shot_at_dt = None
+
+    attachment = BeehiveAttachment(
+        hive_id=hive.id,
+        hive_code=hive.hive_code,
+        uploader_id=current_user.id,
+        uploader_username=current_user.username,
+        file_key=file_key,
+        file_name=file.filename or "unknown",
+        media_type=media_type,
+        file_size=file_size,
+        mime_type=file.content_type,
+        shot_at=shot_at_dt,
+        tags=json.dumps(tag_list, ensure_ascii=False),
+        description=description,
+        created_at=datetime.utcnow(),
+    )
+
+    db.add(attachment)
+    db.commit()
+    db.refresh(attachment)
+
+    logger.info(f"Attachment uploaded by {current_user.username} for hive {hive.hive_code}: {file.filename}")
+
+    return AttachmentUploadResponse(
+        id=attachment.id,
+        file_name=attachment.file_name,
+        media_type=attachment.media_type,
+        file_size=attachment.file_size,
+        message="上传成功",
+    )
+
+@app.delete("/api/hives/attachments/{attachment_id}")
+async def delete_hive_attachment(
+    attachment_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["delete"])),
+):
+    """删除单条蜂箱附件"""
+    attachment = db.query(BeehiveAttachment).filter(BeehiveAttachment.id == attachment_id).first()
+    if not attachment:
+        raise HTTPException(status_code=404, detail="附件不存在")
+
+    if current_user.role != UserRole.FARM_OWNER and attachment.uploader_id != current_user.id:
+        raise HTTPException(status_code=403, detail="无权限删除他人上传的附件")
+
+    try:
+        client = get_minio_client()
+        client.remove_object(MINIO_BUCKET, attachment.file_key)
+    except Exception as e:
+        logger.warning(f"Failed to delete file from MinIO: {e}")
+
+    db.delete(attachment)
+    db.commit()
+
+    logger.info(f"Attachment {attachment_id} deleted by {current_user.username}")
+
+    return {"message": "删除成功", "id": attachment_id}
+
+@app.get("/api/hives/attachments/{attachment_id}/download")
+async def download_attachment(
+    attachment_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取附件下载的临时链接（重定向到预签名URL）"""
+    from fastapi.responses import RedirectResponse
+
+    attachment = db.query(BeehiveAttachment).filter(BeehiveAttachment.id == attachment_id).first()
+    if not attachment:
+        raise HTTPException(status_code=404, detail="附件不存在")
+
+    download_url = get_presigned_download_url(attachment.file_key)
+    if not download_url:
+        raise HTTPException(status_code=500, detail="生成下载链接失败")
+
+    return RedirectResponse(url=download_url)
 
 if __name__ == "__main__":
     import uvicorn

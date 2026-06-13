@@ -4,6 +4,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
+import BeehiveDetail from './pages/BeehiveDetail';
 import BeehiveOperationLog from './pages/BeehiveOperationLog';
 
 function App() {
@@ -18,6 +19,14 @@ function App() {
                         element={
                             <ProtectedRoute>
                                 <Dashboard />
+                            </ProtectedRoute>
+                        }
+                    />
+                    <Route
+                        path="/hives/:id"
+                        element={
+                            <ProtectedRoute>
+                                <BeehiveDetail />
                             </ProtectedRoute>
                         }
                     />

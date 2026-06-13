@@ -25,6 +25,7 @@ import {
     ChevronLeft,
     MessageCircle,
     CalendarClock,
+    ShieldAlert,
 } from 'lucide-react';
 import CommentDrawer from '../components/CommentDrawer';
 import { toast } from 'react-toastify';
@@ -246,6 +247,21 @@ function Dashboard() {
                                     <p className="text-xs text-slate-500 mt-1">季节调度 · 自动工单</p>
                                 </div>
                                 <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-violet-400 transition-colors" />
+                            </Link>
+                        )}
+                        {canRead && (
+                            <Link
+                                to="/sensor-flow-control"
+                                className="group flex flex-col items-center gap-3 p-5 rounded-2xl bg-slate-800/50 hover:bg-rose-500/10 border border-slate-700 hover:border-rose-500/30 transition-all"
+                            >
+                                <div className="p-3 bg-rose-500/20 rounded-xl group-hover:scale-110 transition-transform">
+                                    <ShieldAlert className="w-6 h-6 text-rose-400" />
+                                </div>
+                                <div className="text-center">
+                                    <p className="font-medium text-white">传感器流控</p>
+                                    <p className="text-xs text-slate-500 mt-1">令牌限流 · 设备封禁</p>
+                                </div>
+                                <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-rose-400 transition-colors" />
                             </Link>
                         )}
                     </div>

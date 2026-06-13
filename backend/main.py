@@ -247,6 +247,30 @@ class BeehiveCommentLike(Base):
     )
 
 
+class RateLimitRule(Base):
+    __tablename__ = "rate_limit_rules"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200), nullable=False)
+    path_pattern = Column(String(500), nullable=False, default="/api/sensor-data")
+    device_id_pattern = Column(String(500), nullable=False, default="*")
+    ip_range = Column(String(500), nullable=True)
+    rate_limit = Column(Integer, nullable=False, default=60)
+    burst = Column(Integer, nullable=False, default=10)
+    is_enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DeviceBan(Base):
+    __tablename__ = "device_bans"
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(String(200), nullable=False, unique=True, index=True)
+    reason = Column(String(500), nullable=True)
+    banned_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+    banned_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
 # ========== 巡检计划相关枚举 ==========
 class PlanSeason(str, PyEnum):
     SPRING = "spring"        # 春繁
@@ -679,6 +703,246 @@ class RelocateRequest(BaseModel):
 class RetireRequest(BaseModel):
     reason: Optional[str] = Field(None, description="退役原因")
     notes: Optional[str] = None
+
+# ========== 传感器流控相关 Pydantic 模型 ==========
+class RateLimitRuleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200, description="规则名称")
+    path_pattern: str = Field(default="/api/sensor-data", max_length=500, description="业务路径模式")
+    device_id_pattern: str = Field(default="*", max_length=500, description="设备ID匹配模式")
+    ip_range: Optional[str] = Field(None, max_length=500, description="IP段，如 192.168.1.0/24")
+    rate_limit: int = Field(default=60, gt=0, description="每分钟令牌数")
+    burst: int = Field(default=10, gt=0, description="突发容量")
+    is_enabled: bool = Field(default=True, description="是否启用")
+
+class RateLimitRuleUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    path_pattern: Optional[str] = Field(None, max_length=500)
+    device_id_pattern: Optional[str] = Field(None, max_length=500)
+    ip_range: Optional[str] = Field(None, max_length=500)
+    rate_limit: Optional[int] = Field(None, gt=0)
+    burst: Optional[int] = Field(None, gt=0)
+    is_enabled: Optional[bool] = None
+
+class RateLimitRuleResponse(BaseModel):
+    id: int
+    name: str
+    path_pattern: str
+    device_id_pattern: str
+    ip_range: Optional[str]
+    rate_limit: int
+    burst: int
+    is_enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class DeviceBanRequest(BaseModel):
+    device_id: str = Field(..., min_length=1, max_length=200, description="设备ID")
+    reason: Optional[str] = Field(None, max_length=500, description="封禁原因")
+    duration_minutes: Optional[int] = Field(None, gt=0, description="封禁时长(分钟)，为空则永久")
+
+class DeviceBanResponse(BaseModel):
+    id: int
+    device_id: str
+    reason: Optional[str]
+    banned_at: datetime
+    expires_at: Optional[datetime]
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+class DeviceTokenStats(BaseModel):
+    device_id: str
+    remaining_tokens: float
+    rate_limit: int
+    hit_count_5min: int
+
+class RateLimitHitTimeSeries(BaseModel):
+    timestamp: str
+    hit_count: int
+
+class SensorDataRequest(BaseModel):
+    device_id: str = Field(..., min_length=1, max_length=200, description="设备ID")
+    apiary_id: Optional[str] = Field(None, description="蜂场ID")
+    temperature: Optional[float] = None
+    humidity: Optional[float] = None
+    weight: Optional[float] = None
+    extra: Optional[dict] = None
+
+# ========== 令牌桶限流引擎 ==========
+import threading as _threading
+import ipaddress
+
+_rate_limit_lock = _threading.Lock()
+_token_buckets: dict = {}
+_rate_limit_hits: dict = {}
+_device_last_access: dict = {}
+
+class TokenBucket:
+    def __init__(self, rate: int, burst: int):
+        self.rate = rate
+        self.burst = burst
+        self.tokens = float(burst)
+        self.last_refill = time.time()
+
+    def consume(self, tokens: int = 1) -> bool:
+        now = time.time()
+        elapsed = now - self.last_refill
+        self.tokens = min(self.burst, self.tokens + elapsed * (self.rate / 60.0))
+        self.last_refill = now
+        if self.tokens >= tokens:
+            self.tokens -= tokens
+            return True
+        return False
+
+    def get_remaining(self) -> float:
+        now = time.time()
+        elapsed = now - self.last_refill
+        return min(self.burst, self.tokens + elapsed * (self.rate / 60.0))
+
+def _get_bucket_key(device_id: str, path: str) -> str:
+    return f"{device_id}:{path}"
+
+def _ip_in_range(ip_str: str, ip_range: str) -> bool:
+    if not ip_range or not ip_str:
+        return True
+    try:
+        if '/' in ip_range:
+            network = ipaddress.ip_network(ip_range, strict=False)
+            return ipaddress.ip_address(ip_str) in network
+        else:
+            return ip_str == ip_range
+    except ValueError:
+        return ip_str == ip_range
+
+def _match_pattern(value: str, pattern: str) -> bool:
+    if pattern == '*':
+        return True
+    if pattern.startswith('*') and pattern.endswith('*'):
+        return pattern[1:-1] in value
+    if pattern.startswith('*'):
+        return value.endswith(pattern[1:])
+    if pattern.endswith('*'):
+        return value.startswith(pattern[:-1])
+    return value == pattern
+
+def _find_matching_rule(device_id: str, path: str, ip_str: str, db: Session) -> Optional[RateLimitRule]:
+    rules = db.query(RateLimitRule).filter(RateLimitRule.is_enabled == True).all()
+    for rule in rules:
+        if not _match_pattern(device_id, rule.device_id_pattern):
+            continue
+        if not _match_pattern(path, rule.path_pattern):
+            continue
+        if rule.ip_range and not _ip_in_range(ip_str, rule.ip_range):
+            continue
+        return rule
+    return None
+
+def _record_hit(device_id: str, path: str):
+    now = time.time()
+    key = f"{device_id}:{path}"
+    if key not in _rate_limit_hits:
+        _rate_limit_hits[key] = []
+    _rate_limit_hits[key].append(now)
+    cutoff = now - 300
+    _rate_limit_hits[key] = [t for t in _rate_limit_hits[key] if t > cutoff]
+
+def _get_hit_count(device_id: str, path: str) -> int:
+    key = f"{device_id}:{path}"
+    if key not in _rate_limit_hits:
+        return 0
+    now = time.time()
+    cutoff = now - 300
+    hits = [t for t in _rate_limit_hits[key] if t > cutoff]
+    _rate_limit_hits[key] = hits
+    return len(hits)
+
+def check_rate_limit(device_id: str, path: str, ip_str: str, db: Session) -> tuple[bool, Optional[str], Optional[int]]:
+    rule = _find_matching_rule(device_id, path, ip_str, db)
+    if not rule:
+        bucket_key = _get_bucket_key(device_id, path)
+        with _rate_limit_lock:
+            if bucket_key not in _token_buckets:
+                _token_buckets[bucket_key] = TokenBucket(rate=60, burst=10)
+            bucket = _token_buckets[bucket_key]
+            if bucket.consume():
+                _device_last_access[device_id] = time.time()
+                return True, None, int(bucket.get_remaining())
+            else:
+                _record_hit(device_id, path)
+                _device_last_access[device_id] = time.time()
+                return False, "请求过于频繁，请稍后重试", 0
+    bucket_key = _get_bucket_key(device_id, path)
+    with _rate_limit_lock:
+        if bucket_key not in _token_buckets:
+            _token_buckets[bucket_key] = TokenBucket(rate=rule.rate_limit, burst=rule.burst)
+        bucket = _token_buckets[bucket_key]
+        if bucket.rate != rule.rate_limit or bucket.burst != rule.burst:
+            bucket.rate = rule.rate_limit
+            bucket.burst = rule.burst
+            bucket.tokens = min(bucket.tokens, float(rule.burst))
+        if bucket.consume():
+            _device_last_access[device_id] = time.time()
+            return True, None, int(bucket.get_remaining())
+        else:
+            _record_hit(device_id, path)
+            _device_last_access[device_id] = time.time()
+            return False, "请求过于频繁，请稍后重试", 0
+
+def get_all_device_stats(db: Session) -> List[DeviceTokenStats]:
+    stats = []
+    seen_devices = set()
+    with _rate_limit_lock:
+        for key, bucket in _token_buckets.items():
+            device_id, path = key.rsplit(":", 1) if ":" in key else (key, "")
+            if device_id in seen_devices:
+                continue
+            seen_devices.add(device_id)
+            hit_count = _get_hit_count(device_id, path)
+            stats.append(DeviceTokenStats(
+                device_id=device_id,
+                remaining_tokens=round(bucket.get_remaining(), 1),
+                rate_limit=bucket.rate,
+                hit_count_5min=hit_count,
+            ))
+    return stats
+
+def get_hit_time_series() -> List[RateLimitHitTimeSeries]:
+    now = time.time()
+    series = []
+    for i in range(4, -1, -1):
+        window_start = now - (i + 1) * 60
+        window_end = now - i * 60
+        count = 0
+        for key, hits in _rate_limit_hits.items():
+            count += sum(1 for t in hits if window_start <= t < window_end)
+        ts = datetime.utcfromtimestamp(window_start) if hasattr(datetime, 'utcfromtimestamp') else datetime.now()
+        series.append(RateLimitHitTimeSeries(
+            timestamp=ts.strftime("%H:%M"),
+            hit_count=count,
+        ))
+    return series
+
+def get_top10_limited_devices() -> List[dict]:
+    device_hits = {}
+    for key, hits in _rate_limit_hits.items():
+        device_id = key.rsplit(":", 1)[0] if ":" in key else key
+        device_hits[device_id] = device_hits.get(device_id, 0) + len(hits)
+    sorted_devices = sorted(device_hits.items(), key=lambda x: x[1], reverse=True)[:10]
+    return [{"device_id": d, "hit_count": c} for d, c in sorted_devices]
+
+def is_device_banned(device_id: str, db: Session) -> bool:
+    ban = db.query(DeviceBan).filter(DeviceBan.device_id == device_id).first()
+    if not ban:
+        return False
+    if ban.expires_at and ban.expires_at < datetime.utcnow():
+        db.delete(ban)
+        db.commit()
+        return False
+    return True
 
 # 工具函数
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -2808,6 +3072,191 @@ async def list_execution_logs(
         items=[get_execution_log_response_model(log) for log in logs],
         total=len(logs),
     )
+
+
+# ============ 传感器流控与限流监控接口 ============
+
+@app.post("/api/sensor-data")
+async def submit_sensor_data(
+    data: SensorDataRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    if is_device_banned(data.device_id, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"设备 {data.device_id} 已被封禁，请联系管理员",
+        )
+    ip_str = get_client_ip(request)
+    allowed, error_msg, remaining = check_rate_limit(data.device_id, "/api/sensor-data", ip_str, db)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"message": error_msg, "retry_after": 60, "device_id": data.device_id},
+        )
+    logger.info(f"Sensor data received from device {data.device_id}: temp={data.temperature}, humidity={data.humidity}, weight={data.weight}")
+    return {
+        "status": "accepted",
+        "device_id": data.device_id,
+        "remaining_tokens": remaining,
+        "message": "传感器数据已接收",
+    }
+
+
+@app.get("/api/rate-limit/rules", response_model=List[RateLimitRuleResponse])
+async def list_rate_limit_rules(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    rules = db.query(RateLimitRule).order_by(RateLimitRule.created_at.desc()).all()
+    return rules
+
+
+@app.post("/api/rate-limit/rules", response_model=RateLimitRuleResponse, status_code=status.HTTP_201_CREATED)
+async def create_rate_limit_rule(
+    data: RateLimitRuleCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["create"])),
+):
+    rule = RateLimitRule(
+        name=data.name,
+        path_pattern=data.path_pattern,
+        device_id_pattern=data.device_id_pattern,
+        ip_range=data.ip_range,
+        rate_limit=data.rate_limit,
+        burst=data.burst,
+        is_enabled=data.is_enabled,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    logger.info(f"Rate limit rule created by {current_user.username}: {rule.name}")
+    return rule
+
+
+@app.put("/api/rate-limit/rules/{rule_id}", response_model=RateLimitRuleResponse)
+async def update_rate_limit_rule(
+    rule_id: int,
+    data: RateLimitRuleUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"])),
+):
+    rule = db.query(RateLimitRule).filter(RateLimitRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="限流规则不存在")
+    update_dict = data.model_dump(exclude_unset=True)
+    for key, value in update_dict.items():
+        setattr(rule, key, value)
+    rule.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(rule)
+    logger.info(f"Rate limit rule updated by {current_user.username}: {rule.name}")
+    return rule
+
+
+@app.post("/api/rate-limit/rules/{rule_id}/toggle", response_model=RateLimitRuleResponse)
+async def toggle_rate_limit_rule(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"])),
+):
+    rule = db.query(RateLimitRule).filter(RateLimitRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="限流规则不存在")
+    rule.is_enabled = not rule.is_enabled
+    rule.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(rule)
+    logger.info(f"Rate limit rule toggled by {current_user.username}: {rule.name} -> {'enabled' if rule.is_enabled else 'disabled'}")
+    return rule
+
+
+@app.delete("/api/rate-limit/rules/{rule_id}")
+async def delete_rate_limit_rule(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["delete"])),
+):
+    rule = db.query(RateLimitRule).filter(RateLimitRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="限流规则不存在")
+    db.delete(rule)
+    db.commit()
+    logger.info(f"Rate limit rule deleted by {current_user.username}: {rule.name}")
+    return {"message": "规则已删除"}
+
+
+@app.get("/api/rate-limit/stats")
+async def get_rate_limit_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    device_stats = get_all_device_stats(db)
+    time_series = get_hit_time_series()
+    top10 = get_top10_limited_devices()
+    banned_devices = db.query(DeviceBan).all()
+    active_bans = []
+    for ban in banned_devices:
+        if ban.expires_at and ban.expires_at < datetime.utcnow():
+            db.delete(ban)
+            continue
+        active_bans.append(DeviceBanResponse(
+            id=ban.id,
+            device_id=ban.device_id,
+            reason=ban.reason,
+            banned_at=ban.banned_at,
+            expires_at=ban.expires_at,
+            is_active=True,
+        ))
+    db.commit()
+    return {
+        "device_stats": device_stats,
+        "hit_time_series": time_series,
+        "top10_limited": top10,
+        "banned_devices": active_bans,
+    }
+
+
+@app.post("/api/rate-limit/ban")
+async def ban_device(
+    data: DeviceBanRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"])),
+):
+    existing = db.query(DeviceBan).filter(DeviceBan.device_id == data.device_id).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="设备已被封禁")
+    expires_at = None
+    if data.duration_minutes:
+        expires_at = datetime.utcnow() + timedelta(minutes=data.duration_minutes)
+    ban = DeviceBan(
+        device_id=data.device_id,
+        reason=data.reason or "管理员手动封禁",
+        banned_at=datetime.utcnow(),
+        expires_at=expires_at,
+        banned_by=current_user.id,
+    )
+    db.add(ban)
+    db.commit()
+    logger.info(f"Device banned by {current_user.username}: {data.device_id}")
+    return {"message": f"设备 {data.device_id} 已被封禁", "device_id": data.device_id}
+
+
+@app.delete("/api/rate-limit/ban/{device_id}")
+async def unban_device(
+    device_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"])),
+):
+    ban = db.query(DeviceBan).filter(DeviceBan.device_id == device_id).first()
+    if not ban:
+        raise HTTPException(status_code=404, detail="封禁记录不存在")
+    db.delete(ban)
+    db.commit()
+    logger.info(f"Device unbanned by {current_user.username}: {device_id}")
+    return {"message": f"设备 {device_id} 已解封"}
 
 
 if __name__ == "__main__":

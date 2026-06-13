@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard';
 import BeehiveDetail from './pages/BeehiveDetail';
 import BeehiveOperationLog from './pages/BeehiveOperationLog';
 import InspectionPlan from './pages/InspectionPlan';
+import SensorFlowControl from './pages/SensorFlowControl';
 
 function App() {
     return (
@@ -44,6 +45,14 @@ function App() {
                         element={
                             <ProtectedRoute>
                                 <InspectionPlan />
+                            </ProtectedRoute>
+                        }
+                    />
+                    <Route
+                        path="/sensor-flow-control"
+                        element={
+                            <ProtectedRoute>
+                                <SensorFlowControl />
                             </ProtectedRoute>
                         }
                     />

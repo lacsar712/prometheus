@@ -192,5 +192,17 @@ export const inspectionPlanApi = {
     getExecutionLogs: (params) => api.get('/api/inspection-execution-logs', { params }),
 };
 
+export const rateLimitApi = {
+    listRules: () => api.get('/api/rate-limit/rules'),
+    createRule: (data) => api.post('/api/rate-limit/rules', data),
+    updateRule: (id, data) => api.put(`/api/rate-limit/rules/${id}`, data),
+    toggleRule: (id) => api.post(`/api/rate-limit/rules/${id}/toggle`),
+    deleteRule: (id) => api.delete(`/api/rate-limit/rules/${id}`),
+    getStats: () => api.get('/api/rate-limit/stats'),
+    banDevice: (data) => api.post('/api/rate-limit/ban', data),
+    unbanDevice: (deviceId) => api.delete(`/api/rate-limit/ban/${encodeURIComponent(deviceId)}`),
+    submitSensorData: (data) => api.post('/api/sensor-data', data),
+};
+
 export { api, API_BASE_URL, TOKEN_KEY, REFRESH_TOKEN_KEY, clearAuthAndRedirect };
 export default api;

@@ -1,0 +1,386 @@
+import { useState, useEffect } from 'react';
+import { api } from '../utils/api';
+import { useAuth } from '../contexts/AuthContext';
+import Header from '../components/Header';
+import {
+    BarChart3,
+    Clock,
+    AlertCircle,
+    Plus,
+    Database,
+    Terminal,
+    Server,
+    Layout,
+    Activity,
+    Lock,
+    Shield,
+} from 'lucide-react';
+import { toast } from 'react-toastify';
+
+function Dashboard() {
+    const { user, hasPermission, hasRole } = useAuth();
+    const [items, setItems] = useState([]);
+    const [loading, setLoading] = useState(false);
+    const [newItem, setNewItem] = useState({ name: '', description: '' });
+    const [lastResponse, setLastResponse] = useState(null);
+
+    const canRead = hasPermission('read');
+    const canCreate = hasPermission('create');
+    const canUpdate = hasPermission('update');
+    const canDelete = hasPermission('delete');
+    const canAudit = hasPermission('audit');
+    const canManageUsers = hasPermission('manage_users');
+    const isFarmOwner = hasRole('farm_owner');
+    const isAuditor = hasRole('auditor');
+
+    const fetchItems = async () => {
+        if (!canRead) {
+            toast.info('您没有查看数据的权限');
+            return;
+        }
+        try {
+            const response = await api.get('/api/items');
+            setItems(response.data);
+        } catch (error) {
+            if (error.response?.status !== 403) {
+                toast.error('获取列表失败');
+            }
+        }
+    };
+
+    useEffect(() => {
+        fetchItems();
+    }, []);
+
+    const handleApiCall = async (type) => {
+        setLoading(true);
+        try {
+            let response;
+            const startTime = performance.now();
+
+            switch (type) {
+                case 'success':
+                    response = await api.get('/api/success');
+                    toast.success('请求成功');
+                    break;
+                case 'slow':
+                    response = await api.get('/api/slow');
+                    toast.info('慢请求完成');
+                    break;
+                case 'error':
+                    response = await api.get('/api/error');
+                    break;
+                default:
+                    break;
+            }
+
+            const endTime = performance.now();
+            setLastResponse({
+                type,
+                status: response.status,
+                latency: (endTime - startTime).toFixed(0),
+                data: response.data
+            });
+        } catch (error) {
+            const endTime = performance.now();
+            if (error.response?.status !== 500 || type !== 'error') {
+                toast.error(error.response?.data?.detail || '请求失败');
+            } else {
+                toast.error('模拟故障请求完成');
+            }
+            setLastResponse({
+                type,
+                status: error.response?.status || 500,
+                latency: (endTime - startTime).toFixed(0),
+                data: error.response?.data || 'Unknown error'
+            });
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const addItem = async (e) => {
+        e.preventDefault();
+        if (!canCreate) {
+            toast.warning('您没有添加记录的权限');
+            return;
+        }
+        if (!newItem.name || !newItem.description) {
+            toast.warning('请填写完整信息');
+            return;
+        }
+
+        try {
+            await api.post(`/api/items?name=${newItem.name}&description=${newItem.description}`);
+            toast.success('添加成功');
+            setNewItem({ name: '', description: '' });
+            fetchItems();
+        } catch (error) {
+            if (error.response?.status === 403) {
+                toast.error('权限不足，无法添加');
+            } else {
+                toast.error('添加失败');
+            }
+        }
+    };
+
+    return (
+        <div className="min-h-screen p-6 md:p-12 text-slate-100">
+            <div className="max-w-6xl mx-auto space-y-8">
+
+                <Header />
+
+                {/* 角色权限提示条 */}
+                <div className={`rounded-2xl p-4 border flex items-start gap-3 ${
+                    isFarmOwner
+                        ? 'bg-purple-500/10 border-purple-500/30'
+                        : isAuditor
+                            ? 'bg-teal-500/10 border-teal-500/30'
+                            : 'bg-blue-500/10 border-blue-500/30'
+                }`}>
+                    <Shield className={`w-5 h-5 shrink-0 mt-0.5 ${
+                        isFarmOwner ? 'text-purple-400' : isAuditor ? 'text-teal-400' : 'text-blue-400'
+                    }`} />
+                    <div className="flex-1">
+                        <p className={`text-sm font-medium ${
+                            isFarmOwner ? 'text-purple-300' : isAuditor ? 'text-teal-300' : 'text-blue-300'
+                        }`}>
+                            当前角色：{user?.role_name}（{user?.username}）
+                        </p>
+                        <p className="text-xs text-slate-400 mt-1">
+                            可用权限：{user?.permissions?.join('、') || '无'}
+                            {canManageUsers && ' · 可管理用户'}
+                            {!canCreate && ' · 仅可查看'}
+                        </p>
+                    </div>
+                </div>
+
+                {/* Dash Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+                    {/* API Playground */}
+                    <section className="md:col-span-2 glass-card rounded-3xl p-6 space-y-6">
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                                <BarChart3 className="w-5 h-5 text-blue-400" />
+                                <h2 className="text-xl font-semibold text-white">请求模拟器 (Trigger Metrics)</h2>
+                            </div>
+                            {canAudit && (
+                                <span className="px-2.5 py-1 rounded-md bg-teal-500/15 text-teal-400 text-xs font-medium flex items-center gap-1">
+                                    <Lock className="w-3 h-3" />
+                                    审计模式
+                                </span>
+                            )}
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            {(canRead || canCreate) && (
+                                <button
+                                    onClick={() => handleApiCall('success')}
+                                    disabled={loading}
+                                    className="flex flex-col items-center justify-center gap-3 p-6 rounded-2xl bg-slate-800/50 hover:bg-green-500/10 border border-slate-700 hover:border-green-500/30 transition-all group disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    <div className="p-2 bg-green-500/20 rounded-lg group-hover:scale-110 transition-transform">
+                                        <Activity className="w-6 h-6 text-green-400" />
+                                    </div>
+                                    <span className="font-medium text-green-400">成功请求</span>
+                                    <span className="text-xs text-slate-500">HTTP 200</span>
+                                </button>
+                            )}
+
+                            {canUpdate && (
+                                <button
+                                    onClick={() => handleApiCall('slow')}
+                                    disabled={loading}
+                                    className="flex flex-col items-center justify-center gap-3 p-6 rounded-2xl bg-slate-800/50 hover:bg-yellow-500/10 border border-slate-700 hover:border-yellow-500/30 transition-all group disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    <div className="p-2 bg-yellow-500/20 rounded-lg group-hover:scale-110 transition-transform">
+                                        <Clock className="w-6 h-6 text-yellow-400" />
+                                    </div>
+                                    <span className="font-medium text-yellow-400">延迟请求</span>
+                                    <span className="text-xs text-slate-500">Delay 1-2s</span>
+                                </button>
+                            )}
+
+                            {(canAudit || canDelete) && (
+                                <button
+                                    onClick={() => handleApiCall('error')}
+                                    disabled={loading}
+                                    className="flex flex-col items-center justify-center gap-3 p-6 rounded-2xl bg-slate-800/50 hover:bg-red-500/10 border border-slate-700 hover:border-red-500/30 transition-all group disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    <div className="p-2 bg-red-500/20 rounded-lg group-hover:scale-110 transition-transform">
+                                        <AlertCircle className="w-6 h-6 text-red-400" />
+                                    </div>
+                                    <span className="font-medium text-red-400">错误请求</span>
+                                    <span className="text-xs text-slate-500">HTTP 500</span>
+                                </button>
+                            )}
+
+                            {!(canRead || canCreate) && (
+                                <div className="sm:col-span-3 p-6 rounded-2xl bg-slate-800/30 border border-slate-700 text-center">
+                                    <Lock className="w-8 h-8 text-slate-500 mx-auto mb-2" />
+                                    <p className="text-slate-400 text-sm">当前角色无权执行操作</p>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Last Response Info */}
+                        <div className="rounded-2xl bg-slate-900/50 border border-slate-800 p-4 font-mono text-sm">
+                            <div className="flex items-center gap-2 mb-2 text-slate-500">
+                                <Terminal className="w-4 h-4" />
+                                <span>Last Response</span>
+                            </div>
+                            {lastResponse ? (
+                                <div className="space-y-1">
+                                    <p><span className="text-blue-400">Status:</span> {lastResponse.status}</p>
+                                    <p><span className="text-blue-400">Latency:</span> {lastResponse.latency}ms</p>
+                                    <pre className="text-slate-400 overflow-x-auto text-xs mt-2">
+                                        {JSON.stringify(lastResponse.data, null, 2)}
+                                    </pre>
+                                </div>
+                            ) : (
+                                <p className="text-slate-600 italic">等待操作...</p>
+                            )}
+                        </div>
+                    </section>
+
+                    {/* Monitoring Intro */}
+                    <section className="glass-card rounded-3xl p-6 flex flex-col justify-between space-y-4">
+                        <div>
+                            <div className="flex items-center gap-2 mb-4">
+                                <Server className="w-5 h-5 text-purple-400" />
+                                <h2 className="text-xl font-semibold text-white">指标说明</h2>
+                            </div>
+                            <ul className="space-y-4 text-sm text-slate-400">
+                                <li className="flex gap-3">
+                                    <div className="mt-1 w-1.5 h-1.5 bg-blue-500 rounded-full shrink-0"></div>
+                                    <div>
+                                        <strong className="text-slate-200 block mb-1">QPS (Queries Per Second)</strong>
+                                        统计每秒请求数。Prometheus 通过 counter 指标 `http_requests_total` 计算获得。
+                                    </div>
+                                </li>
+                                <li className="flex gap-3">
+                                    <div className="mt-1 w-1.5 h-1.5 bg-yellow-500 rounded-full shrink-0"></div>
+                                    <div>
+                                        <strong className="text-slate-200 block mb-1">P99 Latency (耗时)</strong>
+                                        表示 99% 的请求都在此耗时内。通过 histogram 指标 `http_request_duration_seconds_bucket` 计算。
+                                    </div>
+                                </li>
+                                <li className="flex gap-3">
+                                    <div className="mt-1 w-1.5 h-1.5 bg-red-500 rounded-full shrink-0"></div>
+                                    <div>
+                                        <strong className="text-slate-200 block mb-1">Error Rate (错误率)</strong>
+                                        统计非 2xx/3xx 响应的占比。
+                                    </div>
+                                </li>
+                            </ul>
+                        </div>
+                        <a
+                            href="http://localhost:9090"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="w-full py-3 rounded-xl bg-purple-600 hover:bg-purple-700 text-center font-medium transition-colors flex items-center justify-center gap-2 text-white"
+                        >
+                            <Layout className="w-4 h-4" />
+                            查看 Prometheus 面板
+                        </a>
+                    </section>
+
+                    {/* Database Demo */}
+                    <section className="md:col-span-3 glass-card rounded-3xl p-6">
+                        <div className="flex items-center justify-between mb-6">
+                            <div className="flex items-center gap-2">
+                                <Database className="w-5 h-5 text-emerald-400" />
+                                <h2 className="text-xl font-semibold text-white">数据库读写测试</h2>
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-slate-500">
+                                {canRead && <span className="px-2 py-1 rounded bg-slate-800">可读</span>}
+                                {canCreate && <span className="px-2 py-1 rounded bg-slate-800">可写</span>}
+                                {canUpdate && <span className="px-2 py-1 rounded bg-slate-800">可改</span>}
+                                {canDelete && <span className="px-2 py-1 rounded bg-slate-800">可删</span>}
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                            {/* Form */}
+                            <div className="lg:col-span-1 space-y-4">
+                                {canCreate ? (
+                                    <form onSubmit={addItem} className="space-y-4">
+                                        <input
+                                            type="text"
+                                            placeholder="名称"
+                                            value={newItem.name}
+                                            onChange={e => setNewItem({ ...newItem, name: e.target.value })}
+                                            className="w-full px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 focus:border-blue-500 outline-none transition-all text-white placeholder-slate-600"
+                                        />
+                                        <textarea
+                                            placeholder="描述"
+                                            value={newItem.description}
+                                            onChange={e => setNewItem({ ...newItem, description: e.target.value })}
+                                            className="w-full px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 focus:border-blue-500 outline-none transition-all h-24 text-white placeholder-slate-600"
+                                        />
+                                        <button
+                                            type="submit"
+                                            className="w-full py-3 bg-blue-600 hover:bg-blue-700 rounded-xl font-medium flex items-center justify-center gap-2 transition-colors text-white"
+                                        >
+                                            <Plus className="w-4 h-4" />
+                                            添加记录
+                                        </button>
+                                    </form>
+                                ) : (
+                                    <div className="rounded-2xl bg-slate-900/30 border border-slate-800 p-6 text-center">
+                                        <Lock className="w-8 h-8 text-slate-500 mx-auto mb-3" />
+                                        <p className="text-slate-400 text-sm">当前角色没有写入权限</p>
+                                        <p className="text-slate-600 text-xs mt-1">如需添加数据，请联系场主或管理员</p>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Table */}
+                            <div className="lg:col-span-2 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+                                <table className="w-full text-left border-collapse">
+                                    <thead>
+                                        <tr className="bg-slate-800/50 text-slate-400 text-sm">
+                                            <th className="px-6 py-4 font-medium">ID</th>
+                                            <th className="px-6 py-4 font-medium">名称</th>
+                                            <th className="px-6 py-4 font-medium">描述</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-800">
+                                        {canRead ? (
+                                            items.length > 0 ? items.map(item => (
+                                                <tr key={item.id} className="hover:bg-slate-800/30 transition-colors">
+                                                    <td className="px-6 py-4 text-slate-500">{item.id}</td>
+                                                    <td className="px-6 py-4 font-medium text-white">{item.name}</td>
+                                                    <td className="px-6 py-4 text-slate-400">{item.description}</td>
+                                                </tr>
+                                            )) : (
+                                                <tr>
+                                                    <td colSpan="3" className="px-6 py-12 text-center text-slate-600 italic">暂无数据</td>
+                                                </tr>
+                                            )
+                                        ) : (
+                                            <tr>
+                                                <td colSpan="3" className="px-6 py-12 text-center">
+                                                    <Lock className="w-6 h-6 text-slate-600 mx-auto mb-2" />
+                                                    <p className="text-slate-600 italic">无权查看数据</p>
+                                                </td>
+                                            </tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+                {/* Footer */}
+                <footer className="text-center text-slate-500 text-sm py-8 border-t border-slate-800">
+                    <p>© 2024 Prometheus Monitoring Fullstack Demo. Powered by FastAPI & React.</p>
+                </footer>
+            </div>
+        </div>
+    );
+}
+
+export default Dashboard;

@@ -160,5 +160,22 @@ export const operationLogApi = {
     getOperationTypes: () => api.get('/api/operation-logs/meta/operation-types'),
 };
 
+export const commentApi = {
+    list: (hiveId, sortBy = 'time') =>
+        api.get(`/api/hives/${hiveId}/comments`, { params: { sort_by: sortBy } }),
+    create: (hiveId, data) => api.post(`/api/hives/${hiveId}/comments`, data),
+    remove: (commentId) => api.delete(`/api/hives/comments/${commentId}`),
+    toggleLike: (commentId) => api.post(`/api/hives/comments/${commentId}/like`),
+};
+
+export const likeApi = {
+    getStatus: (hiveId) => api.get(`/api/hives/${hiveId}/like-status`),
+    toggle: (hiveId) => api.post(`/api/hives/${hiveId}/toggle-like`),
+};
+
+export const userApi = {
+    getMentionList: () => api.get('/api/users/mention-list'),
+};
+
 export { api, API_BASE_URL, TOKEN_KEY, REFRESH_TOKEN_KEY, clearAuthAndRedirect };
 export default api;

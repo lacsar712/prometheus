@@ -23,7 +23,9 @@ import {
     Droplets,
     Scale,
     ChevronLeft,
+    MessageCircle,
 } from 'lucide-react';
+import CommentDrawer from '../components/CommentDrawer';
 import { toast } from 'react-toastify';
 
 function Dashboard() {
@@ -37,6 +39,8 @@ function Dashboard() {
     const [hivesLoading, setHivesLoading] = useState(false);
     const [hivesPage, setHivesPage] = useState(1);
     const [hivesTotal, setHivesTotal] = useState(0);
+    const [selectedHive, setSelectedHive] = useState(null);
+    const [drawerOpen, setDrawerOpen] = useState(false);
 
     const canRead = hasPermission('read');
     const canCreate = hasPermission('create');
@@ -310,10 +314,24 @@ function Dashboard() {
                                             <span className="text-xs text-slate-500">
                                                 {hive.strength_level_name || '-'}群势
                                             </span>
-                                            <span className="text-xs text-emerald-400 group-hover:translate-x-1 transition-transform flex items-center gap-1">
-                                                查看详情
-                                                <ChevronRight className="w-3 h-3" />
-                                            </span>
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        setSelectedHive(hive);
+                                                        setDrawerOpen(true);
+                                                    }}
+                                                    className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors text-xs"
+                                                >
+                                                    <MessageCircle className="w-3.5 h-3.5" />
+                                                    <span>蜂友讨论</span>
+                                                </button>
+                                                <span className="text-xs text-emerald-400 group-hover:translate-x-1 transition-transform flex items-center gap-1">
+                                                    查看详情
+                                                    <ChevronRight className="w-3 h-3" />
+                                                </span>
+                                            </div>
                                         </div>
                                     </Link>
                                 ))}
@@ -575,6 +593,12 @@ function Dashboard() {
                     <p>© 2024 Prometheus Monitoring Fullstack Demo. Powered by FastAPI & React.</p>
                 </footer>
             </div>
+
+            <CommentDrawer
+                hive={selectedHive}
+                isOpen={drawerOpen}
+                onClose={() => setDrawerOpen(false)}
+            />
         </div>
     );
 }

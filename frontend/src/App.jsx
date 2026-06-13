@@ -6,6 +6,7 @@ import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import BeehiveDetail from './pages/BeehiveDetail';
 import BeehiveOperationLog from './pages/BeehiveOperationLog';
+import InspectionPlan from './pages/InspectionPlan';
 
 function App() {
     return (
@@ -35,6 +36,14 @@ function App() {
                         element={
                             <ProtectedRoute>
                                 <BeehiveOperationLog />
+                            </ProtectedRoute>
+                        }
+                    />
+                    <Route
+                        path="/inspection-plans"
+                        element={
+                            <ProtectedRoute>
+                                <InspectionPlan />
                             </ProtectedRoute>
                         }
                     />

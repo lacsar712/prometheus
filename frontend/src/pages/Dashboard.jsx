@@ -24,6 +24,7 @@ import {
     Scale,
     ChevronLeft,
     MessageCircle,
+    CalendarClock,
 } from 'lucide-react';
 import CommentDrawer from '../components/CommentDrawer';
 import { toast } from 'react-toastify';
@@ -230,6 +231,21 @@ function Dashboard() {
                                     <p className="text-xs text-slate-500 mt-1">蜂群照片 · 巡检附件</p>
                                 </div>
                                 <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-blue-400 transition-colors" />
+                            </Link>
+                        )}
+                        {canRead && (
+                            <Link
+                                to="/inspection-plans"
+                                className="group flex flex-col items-center gap-3 p-5 rounded-2xl bg-slate-800/50 hover:bg-violet-500/10 border border-slate-700 hover:border-violet-500/30 transition-all"
+                            >
+                                <div className="p-3 bg-violet-500/20 rounded-xl group-hover:scale-110 transition-transform">
+                                    <CalendarClock className="w-6 h-6 text-violet-400" />
+                                </div>
+                                <div className="text-center">
+                                    <p className="font-medium text-white">巡检计划</p>
+                                    <p className="text-xs text-slate-500 mt-1">季节调度 · 自动工单</p>
+                                </div>
+                                <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-violet-400 transition-colors" />
                             </Link>
                         )}
                     </div>

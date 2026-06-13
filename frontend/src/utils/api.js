@@ -177,5 +177,20 @@ export const userApi = {
     getMentionList: () => api.get('/api/users/mention-list'),
 };
 
+export const inspectionPlanApi = {
+    list: () => api.get('/api/inspection-plans'),
+    get: (id) => api.get(`/api/inspection-plans/${id}`),
+    create: (data) => api.post('/api/inspection-plans', data),
+    update: (id, data) => api.put(`/api/inspection-plans/${id}`, data),
+    remove: (id) => api.delete(`/api/inspection-plans/${id}`),
+    toggle: (id) => api.post(`/api/inspection-plans/${id}/toggle`),
+    trigger: (id) => api.post(`/api/inspection-plans/${id}/trigger`),
+    getTemplates: () => api.get('/api/inspection-plans/templates'),
+    parseCron: (cronExpression) =>
+        api.get('/api/inspection-plans/parse-cron', { params: { cron_expression: cronExpression } }),
+    getTickets: (id, params) => api.get(`/api/inspection-plans/${id}/tickets`, { params }),
+    getExecutionLogs: (params) => api.get('/api/inspection-execution-logs', { params }),
+};
+
 export { api, API_BASE_URL, TOKEN_KEY, REFRESH_TOKEN_KEY, clearAuthAndRedirect };
 export default api;

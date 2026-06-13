@@ -21,6 +21,9 @@ import io
 import csv
 from passlib.context import CryptContext
 import jwt
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+import re
 
 # 配置日志
 logging.basicConfig(
@@ -243,6 +246,104 @@ class BeehiveCommentLike(Base):
         UniqueConstraint('comment_id', 'user_id', name='_comment_user_uc'),
     )
 
+
+# ========== 巡检计划相关枚举 ==========
+class PlanSeason(str, PyEnum):
+    SPRING = "spring"        # 春繁
+    AUTUMN = "autumn"        # 秋繁
+    WINTER = "winter"        # 越冬
+    CUSTOM = "custom"        # 自定义
+
+SEASON_NAMES = {
+    PlanSeason.SPRING: "春繁",
+    PlanSeason.AUTUMN: "秋繁",
+    PlanSeason.WINTER: "越冬",
+    PlanSeason.CUSTOM: "自定义",
+}
+
+class PlanStatus(str, PyEnum):
+    PENDING = "pending"      # 待巡检
+    IN_PROGRESS = "in_progress"  # 巡检中
+    COMPLETED = "completed"  # 已完成
+    CANCELLED = "cancelled"  # 已取消
+
+PLAN_STATUS_NAMES = {
+    PlanStatus.PENDING: "待巡检",
+    PlanStatus.IN_PROGRESS: "巡检中",
+    PlanStatus.COMPLETED: "已完成",
+    PlanStatus.CANCELLED: "已取消",
+}
+
+class ExecutionStatus(str, PyEnum):
+    SUCCESS = "success"
+    FAILED = "failed"
+    PARTIAL = "partial"
+
+EXECUTION_STATUS_NAMES = {
+    ExecutionStatus.SUCCESS: "成功",
+    ExecutionStatus.FAILED: "失败",
+    ExecutionStatus.PARTIAL: "部分成功",
+}
+
+
+# ========== 巡检计划相关数据库模型 ==========
+class InspectionPlan(Base):
+    __tablename__ = "inspection_plans"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200), nullable=False, index=True)
+    season = Column(Enum(PlanSeason), nullable=False, default=PlanSeason.CUSTOM)
+    cron_expression = Column(String(100), nullable=False)
+    filter_conditions = Column(Text, nullable=False, default="{}")
+    checklist_items = Column(Text, nullable=False, default="[]")
+    is_enabled = Column(Boolean, nullable=False, default=True)
+    description = Column(Text, nullable=True)
+    last_run_at = Column(DateTime, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    execution_logs = relationship("InspectionExecutionLog", back_populates="plan", cascade="all, delete-orphan")
+    tickets = relationship("InspectionTicket", back_populates="plan", cascade="all, delete-orphan")
+
+
+class InspectionTicket(Base):
+    __tablename__ = "inspection_tickets"
+    id = Column(Integer, primary_key=True, index=True)
+    plan_id = Column(Integer, ForeignKey("inspection_plans.id"), nullable=False, index=True)
+    plan_name = Column(String(200), nullable=False)
+    hive_id = Column(Integer, ForeignKey("beehives.id"), nullable=False, index=True)
+    hive_code = Column(String(50), index=True, nullable=False)
+    status = Column(Enum(PlanStatus), nullable=False, default=PlanStatus.PENDING, index=True)
+    checklist_items = Column(Text, nullable=False, default="[]")
+    checklist_results = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    executed_at = Column(DateTime, nullable=True)
+    executed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    due_at = Column(DateTime, nullable=True)
+
+    plan = relationship("InspectionPlan", back_populates="tickets")
+    beehive = relationship("Beehive")
+
+
+class InspectionExecutionLog(Base):
+    __tablename__ = "inspection_execution_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    plan_id = Column(Integer, ForeignKey("inspection_plans.id"), nullable=False, index=True)
+    plan_name = Column(String(200), nullable=False)
+    status = Column(Enum(ExecutionStatus), nullable=False, default=ExecutionStatus.SUCCESS, index=True)
+    total_hives = Column(Integer, nullable=False, default=0)
+    success_hives = Column(Integer, nullable=False, default=0)
+    failed_hives = Column(Integer, nullable=False, default=0)
+    error_message = Column(Text, nullable=True)
+    triggered_by = Column(String(50), nullable=False, default="scheduler")
+    started_at = Column(DateTime, default=datetime.utcnow, index=True)
+    finished_at = Column(DateTime, nullable=True)
+
+    plan = relationship("InspectionPlan", back_populates="execution_logs")
+
+
 # Pydantic 模型
 class Token(BaseModel):
     access_token: str
@@ -457,6 +558,105 @@ class LikeToggleResponse(BaseModel):
     like_count: int
     is_liked: bool
     action: str
+
+# ========== 巡检计划相关 Pydantic 模型 ==========
+class InspectionPlanBase(BaseModel):
+    name: str = Field(..., min_length=2, max_length=200, description="计划名称")
+    season: PlanSeason = Field(default=PlanSeason.CUSTOM, description="季节类型")
+    cron_expression: str = Field(..., max_length=100, description="Cron表达式，如 0 9 1 3 * 表示每年3月1日9点")
+    filter_conditions: dict = Field(default_factory=dict, description="蜂箱筛选条件，如 {\"apiary_id\": \"xxx\", \"strength_level\": \"strong\"}")
+    checklist_items: List[str] = Field(default_factory=list, description="巡检清单项")
+    is_enabled: bool = Field(default=True, description="是否启用")
+    description: Optional[str] = Field(None, max_length=1000, description="计划描述")
+
+class InspectionPlanCreate(InspectionPlanBase):
+    pass
+
+class InspectionPlanUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=200)
+    season: Optional[PlanSeason] = None
+    cron_expression: Optional[str] = Field(None, max_length=100)
+    filter_conditions: Optional[dict] = None
+    checklist_items: Optional[List[str]] = None
+    is_enabled: Optional[bool] = None
+    description: Optional[str] = Field(None, max_length=1000)
+
+class InspectionPlanResponse(BaseModel):
+    id: int
+    name: str
+    season: PlanSeason
+    season_name: str
+    cron_expression: str
+    filter_conditions: dict
+    checklist_items: List[str]
+    is_enabled: bool
+    description: Optional[str]
+    last_run_at: Optional[datetime]
+    next_run_at: Optional[datetime]
+    affected_hive_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class InspectionPlanListResponse(BaseModel):
+    items: List[InspectionPlanResponse]
+    total: int
+
+class InspectionTemplateResponse(BaseModel):
+    season: PlanSeason
+    season_name: str
+    name: str
+    cron_expression: str
+    description: str
+    checklist_items: List[str]
+
+class CronParseResponse(BaseModel):
+    cron_expression: str
+    is_valid: bool
+    next_run_at: Optional[datetime]
+    error_message: Optional[str]
+
+class InspectionTicketResponse(BaseModel):
+    id: int
+    plan_id: int
+    plan_name: str
+    hive_id: int
+    hive_code: str
+    status: PlanStatus
+    status_name: str
+    checklist_items: List[str]
+    checklist_results: Optional[dict]
+    notes: Optional[str]
+    executed_at: Optional[datetime]
+    created_at: datetime
+    due_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+class ExecutionLogResponse(BaseModel):
+    id: int
+    plan_id: int
+    plan_name: str
+    status: ExecutionStatus
+    status_name: str
+    total_hives: int
+    success_hives: int
+    failed_hives: int
+    error_message: Optional[str]
+    triggered_by: str
+    started_at: datetime
+    finished_at: Optional[datetime]
+    duration_seconds: Optional[float]
+
+    class Config:
+        from_attributes = True
+
+class ExecutionLogListResponse(BaseModel):
+    items: List[ExecutionLogResponse]
+    total: int
 
 # ========== 操作请求模型 ==========
 class OpenBoxRequest(BaseModel):
@@ -808,6 +1008,331 @@ def sort_comments(comments: List[CommentResponse], sort_by: str) -> List[Comment
                 c.replies.sort(key=lambda r: r.created_at)
     return comments
 
+
+# ========== 巡检计划工具函数与调度器 ==========
+
+INSPECTION_TEMPLATES = [
+    {
+        "season": PlanSeason.SPRING,
+        "season_name": "春繁",
+        "name": "春繁定期巡检",
+        "cron_expression": "0 9 1,15 3,4 *",
+        "description": "春季繁殖期，每半月检查一次蜂王产卵、蜂子脾比例和饲料储备",
+        "checklist_items": [
+            "检查蜂王是否健在、产卵是否正常",
+            "查看子脾比例（卵、幼虫、封盖子）",
+            "检查饲料储备（蜜、粉）",
+            "观察蜂群健康状况，有无病害迹象",
+            "记录群势等级",
+            "清理箱底杂物",
+        ],
+    },
+    {
+        "season": PlanSeason.AUTUMN,
+        "season_name": "秋繁",
+        "name": "秋繁定期巡检",
+        "cron_expression": "0 9 1,15 8,9,10 *",
+        "description": "秋季繁殖期，每半月检查越冬蜂培育和饲料储备情况",
+        "checklist_items": [
+            "检查蜂王产卵情况",
+            "查看越冬适龄蜂数量",
+            "检查蜜粉储备是否充足",
+            "防治蜂螨等病虫害",
+            "评估群势是否达标",
+            "调整巢脾布局",
+        ],
+    },
+    {
+        "season": PlanSeason.WINTER,
+        "season_name": "越冬",
+        "name": "越冬期巡检",
+        "cron_expression": "0 10 1 11,12,1,2 *",
+        "description": "越冬期每月检查一次，确保蜂群安全越冬",
+        "checklist_items": [
+            "听测蜂群声音判断状态",
+            "检查饲料消耗情况",
+            "观察巢门通风情况",
+            "注意保温措施是否到位",
+            "防止鼠害等侵扰",
+            "记录越冬状态",
+        ],
+    },
+]
+
+_scheduler: Optional[BackgroundScheduler] = None
+
+def get_scheduler() -> BackgroundScheduler:
+    global _scheduler
+    if _scheduler is None:
+        _scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
+    return _scheduler
+
+def parse_cron_expression(cron_expr: str) -> Optional[CronTrigger]:
+    try:
+        parts = cron_expr.strip().split()
+        if len(parts) < 5:
+            return None
+        return CronTrigger.from_crontab(cron_expr)
+    except Exception:
+        return None
+
+def get_next_run_time(cron_expr: str) -> Optional[datetime]:
+    trigger = parse_cron_expression(cron_expr)
+    if not trigger:
+        return None
+    try:
+        from apscheduler.triggers.cron import CronTrigger
+        now = datetime.now()
+        next_fire = trigger.get_next_fire_time(None, now)
+        return next_fire
+    except Exception:
+        return None
+
+def validate_cron_expression(cron_expr: str) -> tuple[bool, Optional[str]]:
+    try:
+        parts = cron_expr.strip().split()
+        if len(parts) < 5 or len(parts) > 6:
+            return False, f"Cron表达式需要5-6个字段，当前{len(parts)}个"
+        trigger = parse_cron_expression(cron_expr)
+        if not trigger:
+            return False, "Cron表达式格式不正确"
+        next_time = get_next_run_time(cron_expr)
+        if not next_time:
+            return False, "无法计算下一次执行时间"
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def get_filtered_hives(db: Session, filter_conditions: dict) -> List[Beehive]:
+    query = db.query(Beehive).filter(Beehive.status == "active")
+    if not filter_conditions:
+        return query.all()
+    if "apiary_id" in filter_conditions and filter_conditions["apiary_id"]:
+        query = query.filter(Beehive.apiary_id == filter_conditions["apiary_id"])
+    if "strength_levels" in filter_conditions and filter_conditions["strength_levels"]:
+        levels = filter_conditions["strength_levels"]
+        if isinstance(levels, list) and levels:
+            query = query.filter(Beehive.strength_level.in_(levels))
+    if "bee_species" in filter_conditions and filter_conditions["bee_species"]:
+        query = query.filter(Beehive.bee_species == filter_conditions["bee_species"])
+    if "min_strength" in filter_conditions and filter_conditions["min_strength"]:
+        order = ["weak", "medium", "strong", "very_strong"]
+        min_idx = order.index(filter_conditions["min_strength"]) if filter_conditions["min_strength"] in order else 0
+        query = query.filter(Beehive.strength_level.in_(order[min_idx:]))
+    return query.all()
+
+def parse_filter_conditions(filter_str: str) -> dict:
+    if not filter_str:
+        return {}
+    try:
+        return json.loads(filter_str)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+def parse_checklist_items(checklist_str: str) -> List[str]:
+    if not checklist_str:
+        return []
+    try:
+        items = json.loads(checklist_str)
+        return items if isinstance(items, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+def get_inspection_plan_response_model(plan: InspectionPlan, db: Session) -> InspectionPlanResponse:
+    filter_conditions = parse_filter_conditions(plan.filter_conditions)
+    checklist_items = parse_checklist_items(plan.checklist_items)
+    affected_count = len(get_filtered_hives(db, filter_conditions)) if plan.is_enabled else 0
+    return InspectionPlanResponse(
+        id=plan.id,
+        name=plan.name,
+        season=plan.season,
+        season_name=SEASON_NAMES.get(plan.season, str(plan.season)),
+        cron_expression=plan.cron_expression,
+        filter_conditions=filter_conditions,
+        checklist_items=checklist_items,
+        is_enabled=plan.is_enabled,
+        description=plan.description,
+        last_run_at=plan.last_run_at,
+        next_run_at=get_next_run_time(plan.cron_expression) if plan.is_enabled else None,
+        affected_hive_count=affected_count,
+        created_at=plan.created_at,
+        updated_at=plan.updated_at,
+    )
+
+def get_execution_log_response_model(log: InspectionExecutionLog) -> ExecutionLogResponse:
+    duration = None
+    if log.started_at and log.finished_at:
+        duration = (log.finished_at - log.started_at).total_seconds()
+    return ExecutionLogResponse(
+        id=log.id,
+        plan_id=log.plan_id,
+        plan_name=log.plan_name,
+        status=log.status,
+        status_name=EXECUTION_STATUS_NAMES.get(log.status, str(log.status)),
+        total_hives=log.total_hives,
+        success_hives=log.success_hives,
+        failed_hives=log.failed_hives,
+        error_message=log.error_message,
+        triggered_by=log.triggered_by,
+        started_at=log.started_at,
+        finished_at=log.finished_at,
+        duration_seconds=duration,
+    )
+
+def get_ticket_response_model(ticket: InspectionTicket) -> InspectionTicketResponse:
+    checklist_items = parse_checklist_items(ticket.checklist_items)
+    checklist_results = None
+    if ticket.checklist_results:
+        try:
+            checklist_results = json.loads(ticket.checklist_results)
+        except (json.JSONDecodeError, TypeError):
+            checklist_results = None
+    return InspectionTicketResponse(
+        id=ticket.id,
+        plan_id=ticket.plan_id,
+        plan_name=ticket.plan_name,
+        hive_id=ticket.hive_id,
+        hive_code=ticket.hive_code,
+        status=ticket.status,
+        status_name=PLAN_STATUS_NAMES.get(ticket.status, str(ticket.status)),
+        checklist_items=checklist_items,
+        checklist_results=checklist_results,
+        notes=ticket.notes,
+        executed_at=ticket.executed_at,
+        created_at=ticket.created_at,
+        due_at=ticket.due_at,
+    )
+
+def execute_inspection_plan(plan_id: int, triggered_by: str = "scheduler"):
+    db = SessionLocal()
+    try:
+        plan = db.query(InspectionPlan).filter(InspectionPlan.id == plan_id).first()
+        if not plan:
+            logger.error(f"Inspection plan {plan_id} not found for execution")
+            return
+
+        started_at = datetime.utcnow()
+        filter_conditions = parse_filter_conditions(plan.filter_conditions)
+        checklist_items = plan.checklist_items
+        hives = get_filtered_hives(db, filter_conditions)
+
+        total_hives = len(hives)
+        success_hives = 0
+        failed_hives = 0
+        error_msg = None
+
+        try:
+            for hive in hives:
+                try:
+                    ticket = InspectionTicket(
+                        plan_id=plan.id,
+                        plan_name=plan.name,
+                        hive_id=hive.id,
+                        hive_code=hive.hive_code,
+                        status=PlanStatus.PENDING,
+                        checklist_items=checklist_items,
+                        created_at=datetime.utcnow(),
+                        due_at=datetime.utcnow() + timedelta(days=7),
+                    )
+                    db.add(ticket)
+                    success_hives += 1
+                except Exception as e:
+                    failed_hives += 1
+                    logger.error(f"Failed to create ticket for hive {hive.hive_code}: {e}")
+
+            plan.last_run_at = datetime.utcnow()
+            db.commit()
+
+            exec_status = ExecutionStatus.SUCCESS
+            if failed_hives > 0 and success_hives == 0:
+                exec_status = ExecutionStatus.FAILED
+            elif failed_hives > 0:
+                exec_status = ExecutionStatus.PARTIAL
+
+            finished_at = datetime.utcnow()
+            log_entry = InspectionExecutionLog(
+                plan_id=plan.id,
+                plan_name=plan.name,
+                status=exec_status,
+                total_hives=total_hives,
+                success_hives=success_hives,
+                failed_hives=failed_hives,
+                error_message=error_msg,
+                triggered_by=triggered_by,
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+            db.add(log_entry)
+            db.commit()
+
+            logger.info(
+                f"Inspection plan '{plan.name}' executed: "
+                f"total={total_hives}, success={success_hives}, failed={failed_hives}, "
+                f"triggered_by={triggered_by}"
+            )
+        except Exception as e:
+            db.rollback()
+            error_msg = str(e)
+            finished_at = datetime.utcnow()
+            log_entry = InspectionExecutionLog(
+                plan_id=plan.id,
+                plan_name=plan.name,
+                status=ExecutionStatus.FAILED,
+                total_hives=total_hives,
+                success_hives=success_hives,
+                failed_hives=total_hives - success_hives,
+                error_message=error_msg,
+                triggered_by=triggered_by,
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+            db.add(log_entry)
+            db.commit()
+            logger.error(f"Inspection plan '{plan.name}' execution failed: {e}")
+    finally:
+        db.close()
+
+def schedule_plan(plan: InspectionPlan):
+    scheduler = get_scheduler()
+    job_id = f"inspection_plan_{plan.id}"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+    if not plan.is_enabled:
+        return
+    trigger = parse_cron_expression(plan.cron_expression)
+    if not trigger:
+        logger.warning(f"Invalid cron expression for plan {plan.id}: {plan.cron_expression}")
+        return
+    scheduler.add_job(
+        execute_inspection_plan,
+        trigger=trigger,
+        id=job_id,
+        args=[plan.id, "scheduler"],
+        replace_existing=True,
+    )
+    logger.info(f"Scheduled inspection plan '{plan.name}' (id={plan.id}) with cron: {plan.cron_expression}")
+
+def unschedule_plan(plan_id: int):
+    scheduler = get_scheduler()
+    job_id = f"inspection_plan_{plan_id}"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+        logger.info(f"Unscheduled inspection plan id={plan_id}")
+
+def init_scheduler():
+    scheduler = get_scheduler()
+    db = SessionLocal()
+    try:
+        plans = db.query(InspectionPlan).filter(InspectionPlan.is_enabled == True).all()
+        for plan in plans:
+            schedule_plan(plan)
+        scheduler.start()
+        logger.info(f"Scheduler initialized with {len(plans)} active inspection plans")
+    except Exception as e:
+        logger.error(f"Failed to initialize scheduler: {e}")
+    finally:
+        db.close()
+
 # 依赖项：获取当前登录用户
 async def get_current_user(
     token: Optional[str] = Depends(oauth2_scheme),
@@ -924,6 +1449,7 @@ instrumentator.instrument(app).expose(app)
 async def startup_event():
     init_db()
     init_storage()
+    init_scheduler()
     logger.info("Application started.")
 
 @app.get("/")
@@ -2039,6 +2565,249 @@ async def get_mention_users_list(
         }
         for u in users
     ]
+
+
+# ============ 巡检计划接口 ============
+
+@app.get("/api/inspection-plans/templates", response_model=List[InspectionTemplateResponse])
+async def get_inspection_templates(
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取春繁/秋繁/越冬三套巡检计划模板"""
+    return [
+        InspectionTemplateResponse(
+            season=t["season"],
+            season_name=t["season_name"],
+            name=t["name"],
+            cron_expression=t["cron_expression"],
+            description=t["description"],
+            checklist_items=t["checklist_items"],
+        )
+        for t in INSPECTION_TEMPLATES
+    ]
+
+@app.get("/api/inspection-plans/parse-cron", response_model=CronParseResponse)
+async def parse_cron(
+    cron_expression: str,
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """解析Cron表达式，验证有效性并返回下一次执行时间"""
+    is_valid, error_message = validate_cron_expression(cron_expression)
+    next_run_at = get_next_run_time(cron_expression) if is_valid else None
+    return CronParseResponse(
+        cron_expression=cron_expression,
+        is_valid=is_valid,
+        next_run_at=next_run_at,
+        error_message=error_message,
+    )
+
+@app.get("/api/inspection-plans", response_model=InspectionPlanListResponse)
+async def list_inspection_plans(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取所有巡检计划列表"""
+    plans = db.query(InspectionPlan).order_by(InspectionPlan.created_at.desc()).all()
+    return InspectionPlanListResponse(
+        items=[get_inspection_plan_response_model(p, db) for p in plans],
+        total=len(plans),
+    )
+
+@app.get("/api/inspection-plans/{plan_id}", response_model=InspectionPlanResponse)
+async def get_inspection_plan(
+    plan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取单个巡检计划详情"""
+    plan = db.query(InspectionPlan).filter(InspectionPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="巡检计划不存在")
+    return get_inspection_plan_response_model(plan, db)
+
+@app.post("/api/inspection-plans", response_model=InspectionPlanResponse, status_code=status.HTTP_201_CREATED)
+async def create_inspection_plan(
+    plan_data: InspectionPlanCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["create"])),
+):
+    """创建巡检计划"""
+    is_valid, error_msg = validate_cron_expression(plan_data.cron_expression)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=f"Cron表达式无效: {error_msg}")
+
+    plan = InspectionPlan(
+        name=plan_data.name,
+        season=plan_data.season,
+        cron_expression=plan_data.cron_expression,
+        filter_conditions=json.dumps(plan_data.filter_conditions, ensure_ascii=False),
+        checklist_items=json.dumps(plan_data.checklist_items, ensure_ascii=False),
+        is_enabled=plan_data.is_enabled,
+        description=plan_data.description,
+        created_by=current_user.id,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(plan)
+    db.commit()
+    db.refresh(plan)
+
+    if plan.is_enabled:
+        schedule_plan(plan)
+
+    logger.info(f"Inspection plan created by {current_user.username}: {plan.name}")
+    return get_inspection_plan_response_model(plan, db)
+
+@app.put("/api/inspection-plans/{plan_id}", response_model=InspectionPlanResponse)
+async def update_inspection_plan(
+    plan_id: int,
+    update_data: InspectionPlanUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"])),
+):
+    """更新巡检计划"""
+    plan = db.query(InspectionPlan).filter(InspectionPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="巡检计划不存在")
+
+    update_dict = update_data.model_dump(exclude_unset=True)
+
+    if "cron_expression" in update_dict:
+        is_valid, error_msg = validate_cron_expression(update_dict["cron_expression"])
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"Cron表达式无效: {error_msg}")
+
+    was_enabled = plan.is_enabled
+
+    for key, value in update_dict.items():
+        if key == "filter_conditions":
+            setattr(plan, key, json.dumps(value, ensure_ascii=False))
+        elif key == "checklist_items":
+            setattr(plan, key, json.dumps(value, ensure_ascii=False))
+        else:
+            setattr(plan, key, value)
+
+    plan.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(plan)
+
+    if "is_enabled" in update_dict or "cron_expression" in update_dict:
+        if plan.is_enabled:
+            schedule_plan(plan)
+        else:
+            unschedule_plan(plan.id)
+
+    logger.info(f"Inspection plan updated by {current_user.username}: {plan.name}")
+    return get_inspection_plan_response_model(plan, db)
+
+@app.delete("/api/inspection-plans/{plan_id}")
+async def delete_inspection_plan(
+    plan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["delete"])),
+):
+    """删除巡检计划"""
+    plan = db.query(InspectionPlan).filter(InspectionPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="巡检计划不存在")
+
+    unschedule_plan(plan.id)
+    db.delete(plan)
+    db.commit()
+
+    logger.info(f"Inspection plan deleted by {current_user.username}: {plan.name}")
+    return {"message": "删除成功", "id": plan_id}
+
+@app.post("/api/inspection-plans/{plan_id}/toggle", response_model=InspectionPlanResponse)
+async def toggle_inspection_plan(
+    plan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"])),
+):
+    """切换巡检计划启用/禁用状态"""
+    plan = db.query(InspectionPlan).filter(InspectionPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="巡检计划不存在")
+
+    plan.is_enabled = not plan.is_enabled
+    plan.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(plan)
+
+    if plan.is_enabled:
+        schedule_plan(plan)
+    else:
+        unschedule_plan(plan.id)
+
+    action = "enabled" if plan.is_enabled else "disabled"
+    logger.info(f"Inspection plan {action} by {current_user.username}: {plan.name}")
+    return get_inspection_plan_response_model(plan, db)
+
+@app.post("/api/inspection-plans/{plan_id}/trigger")
+async def trigger_inspection_plan(
+    plan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"])),
+):
+    """手动立即触发巡检计划执行"""
+    plan = db.query(InspectionPlan).filter(InspectionPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="巡检计划不存在")
+
+    import threading
+    thread = threading.Thread(
+        target=execute_inspection_plan,
+        args=(plan.id, f"manual:{current_user.username}"),
+        daemon=True,
+    )
+    thread.start()
+
+    logger.info(f"Inspection plan manually triggered by {current_user.username}: {plan.name}")
+    return {"message": "已触发执行，请稍后查看执行历史", "plan_id": plan_id}
+
+@app.get("/api/inspection-plans/{plan_id}/tickets")
+async def list_plan_tickets(
+    plan_id: int,
+    page: int = 1,
+    size: int = 20,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取巡检计划生成的工单列表"""
+    plan = db.query(InspectionPlan).filter(InspectionPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="巡检计划不存在")
+
+    query = db.query(InspectionTicket).filter(InspectionTicket.plan_id == plan_id)
+    total = query.count()
+    query = query.order_by(InspectionTicket.created_at.desc())
+    offset = (page - 1) * size
+    tickets = query.offset(offset).limit(size).all()
+
+    return {
+        "items": [get_ticket_response_model(t) for t in tickets],
+        "total": total,
+        "page": page,
+        "size": size,
+    }
+
+@app.get("/api/inspection-execution-logs", response_model=ExecutionLogListResponse)
+async def list_execution_logs(
+    limit: int = 50,
+    plan_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取执行历史日志，默认返回最近50条"""
+    query = db.query(InspectionExecutionLog)
+    if plan_id:
+        query = query.filter(InspectionExecutionLog.plan_id == plan_id)
+    query = query.order_by(InspectionExecutionLog.started_at.desc())
+    logs = query.limit(max(1, min(limit, 200))).all()
+    return ExecutionLogListResponse(
+        items=[get_execution_log_response_model(log) for log in logs],
+        total=len(logs),
+    )
 
 
 if __name__ == "__main__":

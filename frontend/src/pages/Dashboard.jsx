@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../contexts/AuthContext';
 import Header from '../components/Header';
@@ -14,6 +15,8 @@ import {
     Activity,
     Lock,
     Shield,
+    ScrollText,
+    ChevronRight,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 
@@ -154,6 +157,31 @@ function Dashboard() {
                         </p>
                     </div>
                 </div>
+
+                {/* 功能入口 */}
+                <section className="glass-card rounded-3xl p-6">
+                    <div className="flex items-center gap-2 mb-5">
+                        <Layout className="w-5 h-5 text-amber-400" />
+                        <h2 className="text-xl font-semibold text-white">功能入口</h2>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                        {(canAudit || canRead) && (
+                            <Link
+                                to="/operation-logs"
+                                className="group flex flex-col items-center gap-3 p-5 rounded-2xl bg-slate-800/50 hover:bg-amber-500/10 border border-slate-700 hover:border-amber-500/30 transition-all"
+                            >
+                                <div className="p-3 bg-amber-500/20 rounded-xl group-hover:scale-110 transition-transform">
+                                    <ScrollText className="w-6 h-6 text-amber-400" />
+                                </div>
+                                <div className="text-center">
+                                    <p className="font-medium text-white">蜂箱操作日志</p>
+                                    <p className="text-xs text-slate-500 mt-1">审计追踪 · 操作留痕</p>
+                                </div>
+                                <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-amber-400 transition-colors" />
+                            </Link>
+                        )}
+                    </div>
+                </section>
 
                 {/* Dash Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

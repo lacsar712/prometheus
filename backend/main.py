@@ -12,10 +12,13 @@ from fastapi import FastAPI, HTTPException, Request, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from prometheus_fastapi_instrumentator import Instrumentator
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum, Text
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum, Text, Float, ForeignKey, Boolean
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, relationship
 from pydantic import BaseModel, EmailStr, Field, validator
+from fastapi.responses import StreamingResponse
+import io
+import csv
 from passlib.context import CryptContext
 import jwt
 
@@ -68,6 +71,43 @@ ROLE_PERMISSIONS = {
     UserRole.AUDITOR: ["read", "audit"],
 }
 
+# 蜂箱操作类型枚举
+class HiveOperationType(str, PyEnum):
+    OPEN_BOX = "open_box"           # 开箱
+    HARVEST = "harvest"             # 采蜜
+    QUEEN_CHANGE = "queen_change"   # 换王
+    RELOCATE = "relocate"           # 迁场
+    RETIRE = "retire"               # 退役
+    CREATE = "create"               # 新建
+    UPDATE = "update"               # 更新
+    INSPECTION = "inspection"       # 巡检
+
+# 操作类型中文名称映射
+OPERATION_TYPE_NAMES = {
+    HiveOperationType.OPEN_BOX: "开箱",
+    HiveOperationType.HARVEST: "采蜜",
+    HiveOperationType.QUEEN_CHANGE: "换王",
+    HiveOperationType.RELOCATE: "迁场",
+    HiveOperationType.RETIRE: "退役",
+    HiveOperationType.CREATE: "新建",
+    HiveOperationType.UPDATE: "更新",
+    HiveOperationType.INSPECTION: "巡检",
+}
+
+# 群势等级
+class StrengthLevel(str, PyEnum):
+    WEAK = "weak"           # 弱
+    MEDIUM = "medium"       # 中
+    STRONG = "strong"       # 强
+    VERY_STRONG = "very_strong"  # 特强
+
+STRENGTH_LEVEL_NAMES = {
+    StrengthLevel.WEAK: "弱",
+    StrengthLevel.MEDIUM: "中",
+    StrengthLevel.STRONG: "强",
+    StrengthLevel.VERY_STRONG: "特强",
+}
+
 # 数据库模型
 class Item(Base):
     __tablename__ = "items"
@@ -83,6 +123,43 @@ class User(Base):
     role = Column(Enum(UserRole), nullable=False)
     farm_scope = Column(Text, nullable=False, default="[]")  # JSON数组存储可访问蜂场ID列表
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class Beehive(Base):
+    __tablename__ = "beehives"
+    id = Column(Integer, primary_key=True, index=True)
+    hive_code = Column(String(50), unique=True, index=True, nullable=False)  # 蜂箱编号
+    apiary_id = Column(String(100), nullable=False, default="default")  # 所属蜂场
+    bee_species = Column(String(50), nullable=True)  # 蜂种
+    box_type = Column(String(50), nullable=True)  # 箱型
+    strength_level = Column(Enum(StrengthLevel), nullable=False, default=StrengthLevel.MEDIUM)  # 群势等级
+    temperature = Column(Float, nullable=True)  # 箱内温度
+    humidity = Column(Float, nullable=True)  # 箱内湿度
+    weight = Column(Float, nullable=True)  # 蜂箱重量
+    queen_birth_date = Column(DateTime, nullable=True)  # 蜂王出生日期
+    location_lat = Column(Float, nullable=True)  # 纬度
+    location_lng = Column(Float, nullable=True)  # 经度
+    status = Column(String(20), nullable=False, default="active")  # active/retired
+    notes = Column(Text, nullable=True)  # 备注
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_inspected_at = Column(DateTime, nullable=True)  # 最近巡检时间
+    retired_at = Column(DateTime, nullable=True)  # 退役时间
+
+    operation_logs = relationship("BeehiveOperationLog", back_populates="beehive")
+
+class BeehiveOperationLog(Base):
+    __tablename__ = "beehive_operation_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    hive_id = Column(Integer, ForeignKey("beehives.id"), nullable=False, index=True)  # 目标蜂箱ID
+    hive_code = Column(String(50), index=True, nullable=False)  # 蜂箱编号（冗余，便于查询）
+    operation_type = Column(Enum(HiveOperationType), nullable=False, index=True)  # 操作类型
+    operator_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # 操作人ID
+    operator_username = Column(String(50), nullable=False)  # 操作人用户名（冗余）
+    context_data = Column(Text, nullable=False, default="{}")  # 操作时关键上下文（JSON格式，含群势、温度等）
+    source_ip = Column(String(50), nullable=True)  # 来源IP
+    description = Column(String(500), nullable=True)  # 操作描述
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)  # 操作时间
+
+    beehive = relationship("Beehive", back_populates="operation_logs")
 
 # Pydantic 模型
 class Token(BaseModel):
@@ -127,6 +204,113 @@ class UserResponse(BaseModel):
 
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
+
+# ========== 蜂箱相关 Pydantic 模型 ==========
+class BeehiveBase(BaseModel):
+    hive_code: str = Field(..., min_length=2, max_length=50, description="蜂箱编号")
+    apiary_id: str = Field(default="default", description="所属蜂场ID")
+    bee_species: Optional[str] = Field(None, max_length=50, description="蜂种")
+    box_type: Optional[str] = Field(None, max_length=50, description="箱型")
+    strength_level: StrengthLevel = Field(default=StrengthLevel.MEDIUM, description="群势等级")
+    temperature: Optional[float] = Field(None, description="箱内温度(℃)")
+    humidity: Optional[float] = Field(None, description="箱内湿度(%)")
+    weight: Optional[float] = Field(None, description="蜂箱重量(kg)")
+    queen_birth_date: Optional[datetime] = Field(None, description="蜂王出生日期")
+    location_lat: Optional[float] = Field(None, description="纬度")
+    location_lng: Optional[float] = Field(None, description="经度")
+    notes: Optional[str] = Field(None, max_length=1000, description="备注")
+
+class BeehiveCreate(BeehiveBase):
+    pass
+
+class BeehiveUpdate(BaseModel):
+    hive_code: Optional[str] = Field(None, min_length=2, max_length=50)
+    apiary_id: Optional[str] = None
+    bee_species: Optional[str] = None
+    box_type: Optional[str] = None
+    strength_level: Optional[StrengthLevel] = None
+    temperature: Optional[float] = None
+    humidity: Optional[float] = None
+    weight: Optional[float] = None
+    queen_birth_date: Optional[datetime] = None
+    location_lat: Optional[float] = None
+    location_lng: Optional[float] = None
+    notes: Optional[str] = None
+    status: Optional[str] = None
+
+class BeehiveResponse(BaseModel):
+    id: int
+    hive_code: str
+    apiary_id: str
+    bee_species: Optional[str]
+    box_type: Optional[str]
+    strength_level: StrengthLevel
+    strength_level_name: str
+    temperature: Optional[float]
+    humidity: Optional[float]
+    weight: Optional[float]
+    queen_birth_date: Optional[datetime]
+    location_lat: Optional[float]
+    location_lng: Optional[float]
+    status: str
+    notes: Optional[str]
+    created_at: datetime
+    last_inspected_at: Optional[datetime]
+    retired_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+class BeehiveListResponse(BaseModel):
+    items: List[BeehiveResponse]
+    total: int
+    page: int
+    size: int
+
+# ========== 操作日志相关 Pydantic 模型 ==========
+class OperationLogResponse(BaseModel):
+    id: int
+    hive_id: int
+    hive_code: str
+    operation_type: HiveOperationType
+    operation_type_name: str
+    operator_id: int
+    operator_username: str
+    context_data: str
+    source_ip: Optional[str]
+    description: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class OperationLogListResponse(BaseModel):
+    items: List[OperationLogResponse]
+    total: int
+    page: int
+    size: int
+
+# ========== 操作请求模型 ==========
+class OpenBoxRequest(BaseModel):
+    notes: Optional[str] = None
+
+class HarvestRequest(BaseModel):
+    harvest_kg: float = Field(..., gt=0, description="采蜜重量(kg)")
+    notes: Optional[str] = None
+
+class QueenChangeRequest(BaseModel):
+    new_queen_code: str = Field(..., description="新蜂王编号")
+    old_queen_reason: Optional[str] = Field(None, description="换王原因")
+    notes: Optional[str] = None
+
+class RelocateRequest(BaseModel):
+    target_apiary: str = Field(..., description="目标蜂场")
+    reason: Optional[str] = Field(None, description="迁场原因")
+    notes: Optional[str] = None
+
+class RetireRequest(BaseModel):
+    reason: Optional[str] = Field(None, description="退役原因")
+    notes: Optional[str] = None
 
 # 工具函数
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -185,6 +369,92 @@ def get_user_response_model(user: User) -> UserResponse:
         created_at=user.created_at,
         permissions=ROLE_PERMISSIONS.get(user.role, []),
     )
+
+def get_beehive_response_model(hive: Beehive) -> BeehiveResponse:
+    return BeehiveResponse(
+        id=hive.id,
+        hive_code=hive.hive_code,
+        apiary_id=hive.apiary_id,
+        bee_species=hive.bee_species,
+        box_type=hive.box_type,
+        strength_level=hive.strength_level,
+        strength_level_name=STRENGTH_LEVEL_NAMES.get(hive.strength_level, str(hive.strength_level)),
+        temperature=hive.temperature,
+        humidity=hive.humidity,
+        weight=hive.weight,
+        queen_birth_date=hive.queen_birth_date,
+        location_lat=hive.location_lat,
+        location_lng=hive.location_lng,
+        status=hive.status,
+        notes=hive.notes,
+        created_at=hive.created_at,
+        last_inspected_at=hive.last_inspected_at,
+        retired_at=hive.retired_at,
+    )
+
+def get_operation_log_response_model(log: BeehiveOperationLog) -> OperationLogResponse:
+    return OperationLogResponse(
+        id=log.id,
+        hive_id=log.hive_id,
+        hive_code=log.hive_code,
+        operation_type=log.operation_type,
+        operation_type_name=OPERATION_TYPE_NAMES.get(log.operation_type, str(log.operation_type)),
+        operator_id=log.operator_id,
+        operator_username=log.operator_username,
+        context_data=log.context_data,
+        source_ip=log.source_ip,
+        description=log.description,
+        created_at=log.created_at,
+    )
+
+def get_hive_context_data(hive: Beehive) -> dict:
+    return {
+        "strength_level": hive.strength_level.value if hive.strength_level else None,
+        "strength_level_name": STRENGTH_LEVEL_NAMES.get(hive.strength_level, str(hive.strength_level)) if hive.strength_level else None,
+        "temperature": hive.temperature,
+        "humidity": hive.humidity,
+        "weight": hive.weight,
+        "bee_species": hive.bee_species,
+        "box_type": hive.box_type,
+        "apiary_id": hive.apiary_id,
+        "status": hive.status,
+        "queen_birth_date": hive.queen_birth_date.isoformat() if hive.queen_birth_date else None,
+    }
+
+def create_operation_log(
+    db: Session,
+    hive: Beehive,
+    operation_type: HiveOperationType,
+    operator: User,
+    source_ip: Optional[str] = None,
+    description: Optional[str] = None,
+    extra_context: Optional[dict] = None,
+) -> BeehiveOperationLog:
+    context = get_hive_context_data(hive)
+    if extra_context:
+        context.update(extra_context)
+
+    log = BeehiveOperationLog(
+        hive_id=hive.id,
+        hive_code=hive.hive_code,
+        operation_type=operation_type,
+        operator_id=operator.id,
+        operator_username=operator.username,
+        context_data=json.dumps(context, ensure_ascii=False),
+        source_ip=source_ip,
+        description=description,
+        created_at=datetime.utcnow(),
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    return log
+
+def get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 # 依赖项：获取当前登录用户
 async def get_current_user(
@@ -465,6 +735,489 @@ async def create_item(
     db.refresh(db_item)
     logger.info(f"Item created by {current_user.username}: {db_item.name}")
     return db_item
+
+# ============ 蜂箱档案接口 ============
+
+@app.get("/api/hives", response_model=BeehiveListResponse)
+async def list_beehives(
+    page: int = 1,
+    size: int = 20,
+    keyword: Optional[str] = None,
+    apiary_id: Optional[str] = None,
+    strength_in: Optional[str] = None,
+    status: Optional[str] = None,
+    order_by: str = "created_at",
+    order_dir: str = "desc",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"]))
+):
+    """分页查询蜂箱列表"""
+    query = db.query(Beehive)
+
+    if keyword:
+        query = query.filter(
+            (Beehive.hive_code.ilike(f"%{keyword}%")) |
+            (Beehive.notes.ilike(f"%{keyword}%"))
+        )
+    if apiary_id:
+        query = query.filter(Beehive.apiary_id == apiary_id)
+    if strength_in:
+        levels = [s.strip() for s in strength_in.split(",") if s.strip()]
+        if levels:
+            query = query.filter(Beehive.strength_level.in_(levels))
+    if status:
+        query = query.filter(Beehive.status == status)
+
+    total = query.count()
+
+    valid_order_fields = ["id", "hive_code", "created_at", "last_inspected_at", "strength_level"]
+    if order_by not in valid_order_fields:
+        order_by = "created_at"
+    if order_dir.lower() == "asc":
+        query = query.order_by(getattr(Beehive, order_by).asc())
+    else:
+        query = query.order_by(getattr(Beehive, order_by).desc())
+
+    offset = (page - 1) * size
+    items = query.offset(offset).limit(size).all()
+
+    return BeehiveListResponse(
+        items=[get_beehive_response_model(h) for h in items],
+        total=total,
+        page=page,
+        size=size,
+    )
+
+@app.get("/api/hives/{hive_id}", response_model=BeehiveResponse)
+async def get_beehive(
+    hive_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"]))
+):
+    """获取单个蜂箱详情"""
+    hive = db.query(Beehive).filter(Beehive.id == hive_id).first()
+    if not hive:
+        raise HTTPException(status_code=404, detail="蜂箱不存在")
+    return get_beehive_response_model(hive)
+
+@app.post("/api/hives", response_model=BeehiveResponse, status_code=status.HTTP_201_CREATED)
+async def create_beehive(
+    hive_data: BeehiveCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["create"]))
+):
+    """新建蜂箱（自动记录操作日志）"""
+    existing = db.query(Beehive).filter(Beehive.hive_code == hive_data.hive_code).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="蜂箱编号已存在")
+
+    hive = Beehive(**hive_data.model_dump())
+    db.add(hive)
+    db.flush()
+
+    create_operation_log(
+        db=db,
+        hive=hive,
+        operation_type=HiveOperationType.CREATE,
+        operator=current_user,
+        source_ip=get_client_ip(request),
+        description=f"新建蜂箱 {hive.hive_code}",
+    )
+
+    db.commit()
+    db.refresh(hive)
+    logger.info(f"Beehive created by {current_user.username}: {hive.hive_code}")
+    return get_beehive_response_model(hive)
+
+@app.put("/api/hives/{hive_id}", response_model=BeehiveResponse)
+async def update_beehive(
+    hive_id: int,
+    update_data: BeehiveUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"]))
+):
+    """更新蜂箱信息（自动记录操作日志）"""
+    hive = db.query(Beehive).filter(Beehive.id == hive_id).first()
+    if not hive:
+        raise HTTPException(status_code=404, detail="蜂箱不存在")
+
+    update_dict = update_data.model_dump(exclude_unset=True)
+    if not update_dict:
+        return get_beehive_response_model(hive)
+
+    if "hive_code" in update_dict and update_dict["hive_code"] != hive.hive_code:
+        existing = db.query(Beehive).filter(Beehive.hive_code == update_dict["hive_code"]).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="蜂箱编号已存在")
+
+    changed_fields = []
+    for key, value in update_dict.items():
+        if hasattr(hive, key):
+            old_val = getattr(hive, key)
+            if old_val != value:
+                changed_fields.append(key)
+            setattr(hive, key, value)
+
+    if changed_fields:
+        create_operation_log(
+            db=db,
+            hive=hive,
+            operation_type=HiveOperationType.UPDATE,
+            operator=current_user,
+            source_ip=get_client_ip(request),
+            description=f"更新蜂箱信息，变更字段: {', '.join(changed_fields)}",
+            extra_context={"changed_fields": changed_fields},
+        )
+
+    db.commit()
+    db.refresh(hive)
+    logger.info(f"Beehive updated by {current_user.username}: {hive.hive_code}")
+    return get_beehive_response_model(hive)
+
+# ============ 蜂箱操作接口（均自动记录审计日志） ============
+
+@app.post("/api/hives/{hive_id}/open", response_model=OperationLogResponse)
+async def open_beehive(
+    hive_id: int,
+    req_data: OpenBoxRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"]))
+):
+    """开箱操作（自动记录审计日志）"""
+    hive = db.query(Beehive).filter(Beehive.id == hive_id).first()
+    if not hive:
+        raise HTTPException(status_code=404, detail="蜂箱不存在")
+    if hive.status != "active":
+        raise HTTPException(status_code=400, detail="蜂箱已退役，无法操作")
+
+    hive.last_inspected_at = datetime.utcnow()
+
+    log = create_operation_log(
+        db=db,
+        hive=hive,
+        operation_type=HiveOperationType.OPEN_BOX,
+        operator=current_user,
+        source_ip=get_client_ip(request),
+        description=req_data.notes or "开箱巡检",
+        extra_context={"operation": "open_box"},
+    )
+
+    db.commit()
+    logger.info(f"Beehive {hive.hive_code} opened by {current_user.username}")
+    return get_operation_log_response_model(log)
+
+@app.post("/api/hives/{hive_id}/harvest", response_model=OperationLogResponse)
+async def harvest_beehive(
+    hive_id: int,
+    req_data: HarvestRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"]))
+):
+    """采蜜操作（自动记录审计日志）"""
+    hive = db.query(Beehive).filter(Beehive.id == hive_id).first()
+    if not hive:
+        raise HTTPException(status_code=404, detail="蜂箱不存在")
+    if hive.status != "active":
+        raise HTTPException(status_code=400, detail="蜂箱已退役，无法操作")
+
+    old_weight = hive.weight
+    if hive.weight and hive.weight > req_data.harvest_kg:
+        hive.weight = round(hive.weight - req_data.harvest_kg, 2)
+
+    log = create_operation_log(
+        db=db,
+        hive=hive,
+        operation_type=HiveOperationType.HARVEST,
+        operator=current_user,
+        source_ip=get_client_ip(request),
+        description=f"采蜜 {req_data.harvest_kg}kg" + (f"，{req_data.notes}" if req_data.notes else ""),
+        extra_context={
+            "harvest_kg": req_data.harvest_kg,
+            "weight_before": old_weight,
+            "weight_after": hive.weight,
+        },
+    )
+
+    db.commit()
+    logger.info(f"Beehive {hive.hive_code} harvested {req_data.harvest_kg}kg by {current_user.username}")
+    return get_operation_log_response_model(log)
+
+@app.post("/api/hives/{hive_id}/queen-change", response_model=OperationLogResponse)
+async def queen_change_beehive(
+    hive_id: int,
+    req_data: QueenChangeRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"]))
+):
+    """换王操作（自动记录审计日志）"""
+    hive = db.query(Beehive).filter(Beehive.id == hive_id).first()
+    if not hive:
+        raise HTTPException(status_code=404, detail="蜂箱不存在")
+    if hive.status != "active":
+        raise HTTPException(status_code=400, detail="蜂箱已退役，无法操作")
+
+    old_queen_date = hive.queen_birth_date
+    hive.queen_birth_date = datetime.utcnow()
+
+    log = create_operation_log(
+        db=db,
+        hive=hive,
+        operation_type=HiveOperationType.QUEEN_CHANGE,
+        operator=current_user,
+        source_ip=get_client_ip(request),
+        description=f"换王：新蜂王编号 {req_data.new_queen_code}" + (f"，原因：{req_data.old_queen_reason}" if req_data.old_queen_reason else ""),
+        extra_context={
+            "new_queen_code": req_data.new_queen_code,
+            "old_queen_reason": req_data.old_queen_reason,
+            "old_queen_birth_date": old_queen_date.isoformat() if old_queen_date else None,
+        },
+    )
+
+    db.commit()
+    logger.info(f"Beehive {hive.hive_code} queen changed by {current_user.username}")
+    return get_operation_log_response_model(log)
+
+@app.post("/api/hives/{hive_id}/relocate", response_model=OperationLogResponse)
+async def relocate_beehive(
+    hive_id: int,
+    req_data: RelocateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"]))
+):
+    """迁场操作（自动记录审计日志）"""
+    hive = db.query(Beehive).filter(Beehive.id == hive_id).first()
+    if not hive:
+        raise HTTPException(status_code=404, detail="蜂箱不存在")
+    if hive.status != "active":
+        raise HTTPException(status_code=400, detail="蜂箱已退役，无法操作")
+
+    old_apiary = hive.apiary_id
+    hive.apiary_id = req_data.target_apiary
+
+    log = create_operation_log(
+        db=db,
+        hive=hive,
+        operation_type=HiveOperationType.RELOCATE,
+        operator=current_user,
+        source_ip=get_client_ip(request),
+        description=f"迁场：从 {old_apiary} 到 {req_data.target_apiary}" + (f"，原因：{req_data.reason}" if req_data.reason else ""),
+        extra_context={
+            "from_apiary": old_apiary,
+            "to_apiary": req_data.target_apiary,
+            "reason": req_data.reason,
+        },
+    )
+
+    db.commit()
+    logger.info(f"Beehive {hive.hive_code} relocated by {current_user.username}")
+    return get_operation_log_response_model(log)
+
+@app.post("/api/hives/{hive_id}/retire", response_model=OperationLogResponse)
+async def retire_beehive(
+    hive_id: int,
+    req_data: RetireRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["delete"]))
+):
+    """退役蜂箱（自动记录审计日志）"""
+    hive = db.query(Beehive).filter(Beehive.id == hive_id).first()
+    if not hive:
+        raise HTTPException(status_code=404, detail="蜂箱不存在")
+    if hive.status == "retired":
+        raise HTTPException(status_code=400, detail="蜂箱已退役")
+
+    hive.status = "retired"
+    hive.retired_at = datetime.utcnow()
+
+    log = create_operation_log(
+        db=db,
+        hive=hive,
+        operation_type=HiveOperationType.RETIRE,
+        operator=current_user,
+        source_ip=get_client_ip(request),
+        description=f"蜂箱退役" + (f"，原因：{req_data.reason}" if req_data.reason else ""),
+        extra_context={"retire_reason": req_data.reason},
+    )
+
+    db.commit()
+    logger.info(f"Beehive {hive.hive_code} retired by {current_user.username}")
+    return get_operation_log_response_model(log)
+
+# ============ 操作日志查询接口 ============
+
+@app.get("/api/operation-logs", response_model=OperationLogListResponse)
+async def list_operation_logs(
+    page: int = 1,
+    size: int = 20,
+    operator_id: Optional[int] = None,
+    operator_username: Optional[str] = None,
+    hive_id: Optional[int] = None,
+    hive_code: Optional[str] = None,
+    operation_types: Optional[str] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    keyword: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """分页查询操作日志，支持多维度筛选"""
+    query = db.query(BeehiveOperationLog)
+
+    if operator_id:
+        query = query.filter(BeehiveOperationLog.operator_id == operator_id)
+    if operator_username:
+        query = query.filter(BeehiveOperationLog.operator_username.ilike(f"%{operator_username}%"))
+    if hive_id:
+        query = query.filter(BeehiveOperationLog.hive_id == hive_id)
+    if hive_code:
+        query = query.filter(BeehiveOperationLog.hive_code.ilike(f"%{hive_code}%"))
+    if operation_types:
+        types = [t.strip() for t in operation_types.split(",") if t.strip()]
+        if types:
+            query = query.filter(BeehiveOperationLog.operation_type.in_(types))
+    if start_time:
+        query = query.filter(BeehiveOperationLog.created_at >= start_time)
+    if end_time:
+        query = query.filter(BeehiveOperationLog.created_at <= end_time)
+    if keyword:
+        query = query.filter(
+            (BeehiveOperationLog.hive_code.ilike(f"%{keyword}%")) |
+            (BeehiveOperationLog.operator_username.ilike(f"%{keyword}%")) |
+            (BeehiveOperationLog.description.ilike(f"%{keyword}%"))
+        )
+
+    total = query.count()
+    query = query.order_by(BeehiveOperationLog.created_at.desc())
+    offset = (page - 1) * size
+    items = query.offset(offset).limit(size).all()
+
+    return OperationLogListResponse(
+        items=[get_operation_log_response_model(log) for log in items],
+        total=total,
+        page=page,
+        size=size,
+    )
+
+@app.get("/api/operation-logs/{log_id}", response_model=OperationLogResponse)
+async def get_operation_log_detail(
+    log_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取单条操作日志详情"""
+    log = db.query(BeehiveOperationLog).filter(BeehiveOperationLog.id == log_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="操作日志不存在")
+    return get_operation_log_response_model(log)
+
+@app.get("/api/operation-logs/export/csv")
+async def export_operation_logs_csv(
+    ids: Optional[str] = None,
+    operator_id: Optional[int] = None,
+    operator_username: Optional[str] = None,
+    hive_id: Optional[int] = None,
+    hive_code: Optional[str] = None,
+    operation_types: Optional[str] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    keyword: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """导出操作日志为CSV文件"""
+    query = db.query(BeehiveOperationLog)
+
+    if ids:
+        id_list = [int(i.strip()) for i in ids.split(",") if i.strip().isdigit()]
+        if id_list:
+            query = query.filter(BeehiveOperationLog.id.in_(id_list))
+    else:
+        if operator_id:
+            query = query.filter(BeehiveOperationLog.operator_id == operator_id)
+        if operator_username:
+            query = query.filter(BeehiveOperationLog.operator_username.ilike(f"%{operator_username}%"))
+        if hive_id:
+            query = query.filter(BeehiveOperationLog.hive_id == hive_id)
+        if hive_code:
+            query = query.filter(BeehiveOperationLog.hive_code.ilike(f"%{hive_code}%"))
+        if operation_types:
+            types = [t.strip() for t in operation_types.split(",") if t.strip()]
+            if types:
+                query = query.filter(BeehiveOperationLog.operation_type.in_(types))
+        if start_time:
+            query = query.filter(BeehiveOperationLog.created_at >= start_time)
+        if end_time:
+            query = query.filter(BeehiveOperationLog.created_at <= end_time)
+        if keyword:
+            query = query.filter(
+                (BeehiveOperationLog.hive_code.ilike(f"%{keyword}%")) |
+                (BeehiveOperationLog.operator_username.ilike(f"%{keyword}%")) |
+                (BeehiveOperationLog.description.ilike(f"%{keyword}%"))
+            )
+
+    query = query.order_by(BeehiveOperationLog.created_at.desc())
+    logs = query.all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "ID", "操作时间", "操作类型", "操作人", "蜂箱编号",
+        "蜂箱ID", "来源IP", "操作描述", "上下文数据"
+    ])
+
+    for log in logs:
+        op_name = OPERATION_TYPE_NAMES.get(log.operation_type, str(log.operation_type))
+        writer.writerow([
+            log.id,
+            log.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            op_name,
+            log.operator_username,
+            log.hive_code,
+            log.hive_id,
+            log.source_ip or "",
+            log.description or "",
+            log.context_data,
+        ])
+
+    output.seek(0)
+    csv_bytes = output.getvalue().encode("utf-8-sig")
+
+    return StreamingResponse(
+        iter([csv_bytes]),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename=operation_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        },
+    )
+
+@app.get("/api/operation-logs/meta/operators")
+async def get_operators_list(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取操作人列表（用于筛选下拉）"""
+    users = db.query(User).all()
+    return [
+        {"id": u.id, "username": u.username, "role": u.role.value, "role_name": ROLE_NAMES.get(u.role, str(u.role))}
+        for u in users
+    ]
+
+@app.get("/api/operation-logs/meta/operation-types")
+async def get_operation_types_list(
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取操作类型列表（用于筛选多选）"""
+    return [
+        {"value": op.value, "label": name}
+        for op, name in OPERATION_TYPE_NAMES.items()
+    ]
 
 if __name__ == "__main__":
     import uvicorn

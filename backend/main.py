@@ -2911,7 +2911,16 @@ async def list_beehives(
 
     valid_order_fields = ["id", "hive_code", "created_at", "last_inspected_at", "strength_level"]
     if order_by not in valid_order_fields:
-        order_by = "created_at"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"非法的排序字段 order_by: {order_by}。合法值为: {', '.join(valid_order_fields)}",
+        )
+    valid_order_dirs = ["asc", "desc"]
+    if order_dir.lower() not in valid_order_dirs:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"非法的排序方向 order_dir: {order_dir}。合法值为: {', '.join(valid_order_dirs)}",
+        )
     if order_dir.lower() == "asc":
         query = query.order_by(getattr(Beehive, order_by).asc())
     else:

@@ -213,5 +213,21 @@ export const apiKeyApi = {
         api.get(`/api/api-keys/${id}/call-logs`, { params: { page, size } }),
 };
 
+export const notificationApi = {
+    list: (params = {}) => api.get('/api/notifications', { params }),
+    getUnreadCount: () => api.get('/api/notifications/unread-count'),
+    markRead: (id) => api.post(`/api/notifications/${id}/read`),
+    markAllRead: (category) =>
+        api.post('/api/notifications/read-all', null, { params: category ? { category } : {} }),
+    remove: (id) => api.delete(`/api/notifications/${id}`),
+    dispatch: (data) => api.post('/api/internal/notifications/dispatch', data),
+};
+
+const WS_BASE_URL = API_BASE_URL.replace('http://', 'ws://').replace('https://', 'wss://');
+
+export const buildNotificationWsUrl = (token) => {
+    return `${WS_BASE_URL}/ws/notifications?token=${encodeURIComponent(token)}`;
+};
+
 export { api, API_BASE_URL, TOKEN_KEY, REFRESH_TOKEN_KEY, clearAuthAndRedirect };
 export default api;

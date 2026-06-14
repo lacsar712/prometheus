@@ -29,6 +29,7 @@ import {
     Key,
 } from 'lucide-react';
 import CommentDrawer from '../components/CommentDrawer';
+import NotificationDrawer from '../components/NotificationDrawer';
 import { toast } from 'react-toastify';
 
 function Dashboard() {
@@ -647,6 +648,8 @@ function Dashboard() {
                 isOpen={drawerOpen}
                 onClose={() => setDrawerOpen(false)}
             />
+
+            <NotificationDrawer />
         </div>
     );
 }

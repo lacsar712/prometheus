@@ -6,9 +6,9 @@ import asyncio
 import json
 from datetime import datetime, timedelta
 from enum import Enum as PyEnum
-from typing import Optional, List
+from typing import Optional, List, Dict
 
-from fastapi import FastAPI, HTTPException, Request, Depends, status, File, Form, UploadFile
+from fastapi import FastAPI, HTTPException, Request, Depends, status, File, Form, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -374,6 +374,31 @@ EXECUTION_STATUS_NAMES = {
 }
 
 
+# ========== 消息中心相关枚举 ==========
+class MessageCategory(str, PyEnum):
+    ALERT = "alert"           # 蜂群告警
+    SYSTEM = "system"         # 系统通知
+    BUSINESS = "business"     # 业务消息
+
+MESSAGE_CATEGORY_NAMES = {
+    MessageCategory.ALERT: "蜂群告警",
+    MessageCategory.SYSTEM: "系统通知",
+    MessageCategory.BUSINESS: "业务消息",
+}
+
+
+class SeverityLevel(str, PyEnum):
+    INFO = "info"             # 提示
+    WARNING = "warning"       # 警告
+    CRITICAL = "critical"     # 严重
+
+SEVERITY_LEVEL_NAMES = {
+    SeverityLevel.INFO: "提示",
+    SeverityLevel.WARNING: "警告",
+    SeverityLevel.CRITICAL: "严重",
+}
+
+
 # ========== 巡检计划相关数据库模型 ==========
 class InspectionPlan(Base):
     __tablename__ = "inspection_plans"
@@ -430,6 +455,84 @@ class InspectionExecutionLog(Base):
     finished_at = Column(DateTime, nullable=True)
 
     plan = relationship("InspectionPlan", back_populates="execution_logs")
+
+
+# ========== 消息中心数据库模型 ==========
+class Notification(Base):
+    __tablename__ = "notifications"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    category = Column(Enum(MessageCategory), nullable=False, index=True)
+    title = Column(String(200), nullable=False)
+    content = Column(Text, nullable=False)
+    severity = Column(Enum(SeverityLevel), nullable=False, default=SeverityLevel.INFO, index=True)
+    is_read = Column(Boolean, nullable=False, default=False, index=True)
+    source = Column(String(100), nullable=True)
+    related_id = Column(Integer, nullable=True)
+    extra_data = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    read_at = Column(DateTime, nullable=True)
+
+    user = relationship("User")
+
+
+# ========== 消息中心 Pydantic 模型 ==========
+class NotificationBase(BaseModel):
+    category: MessageCategory
+    title: str = Field(..., min_length=1, max_length=200)
+    content: str = Field(..., min_length=1)
+    severity: SeverityLevel = SeverityLevel.INFO
+    source: Optional[str] = None
+    related_id: Optional[int] = None
+    extra_data: Optional[Dict] = None
+
+
+class NotificationCreate(NotificationBase):
+    user_id: int
+
+
+class NotificationDispatchRequest(BaseModel):
+    category: MessageCategory
+    title: str = Field(..., min_length=1, max_length=200)
+    content: str = Field(..., min_length=1)
+    severity: SeverityLevel = SeverityLevel.INFO
+    source: Optional[str] = None
+    related_id: Optional[int] = None
+    extra_data: Optional[Dict] = None
+    user_ids: Optional[List[int]] = None
+    target_roles: Optional[List[UserRole]] = None
+    target_farm_ids: Optional[List[str]] = None
+
+
+class NotificationResponse(BaseModel):
+    id: int
+    user_id: int
+    category: MessageCategory
+    category_name: str
+    title: str
+    content: str
+    severity: SeverityLevel
+    severity_name: str
+    is_read: bool
+    source: Optional[str]
+    related_id: Optional[int]
+    extra_data: Optional[Dict]
+    created_at: datetime
+    read_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class NotificationListResponse(BaseModel):
+    items: List[NotificationResponse]
+    total: int
+    unread_count: int
+
+
+class UnreadCountResponse(BaseModel):
+    total: int
+    by_category: Dict[str, int]
 
 
 # Pydantic 模型
@@ -3734,6 +3837,304 @@ async def get_api_key_call_logs(
         for log in logs
     ]
     return {"items": items, "total": total}
+
+
+# ============ WebSocket 连接管理器 ============
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[int, List[WebSocket]] = {}
+
+    async def connect(self, websocket: WebSocket, user_id: int):
+        await websocket.accept()
+        if user_id not in self.active_connections:
+            self.active_connections[user_id] = []
+        self.active_connections[user_id].append(websocket)
+
+    def disconnect(self, websocket: WebSocket, user_id: int):
+        if user_id in self.active_connections:
+            if websocket in self.active_connections[user_id]:
+                self.active_connections[user_id].remove(websocket)
+            if len(self.active_connections[user_id]) == 0:
+                del self.active_connections[user_id]
+
+    async def send_personal_message(self, message: dict, user_id: int):
+        if user_id in self.active_connections:
+            for websocket in self.active_connections[user_id]:
+                try:
+                    await websocket.send_json(message)
+                except Exception:
+                    pass
+
+    async def broadcast(self, message: dict):
+        for user_id in list(self.active_connections.keys()):
+            await self.send_personal_message(message, user_id)
+
+
+ws_manager = ConnectionManager()
+
+
+def _make_notification_response(notification: Notification) -> NotificationResponse:
+    extra_data = None
+    if notification.extra_data:
+        try:
+            extra_data = json.loads(notification.extra_data)
+        except Exception:
+            extra_data = None
+    return NotificationResponse(
+        id=notification.id,
+        user_id=notification.user_id,
+        category=notification.category,
+        category_name=MESSAGE_CATEGORY_NAMES.get(notification.category, notification.category.value),
+        title=notification.title,
+        content=notification.content,
+        severity=notification.severity,
+        severity_name=SEVERITY_LEVEL_NAMES.get(notification.severity, notification.severity.value),
+        is_read=notification.is_read,
+        source=notification.source,
+        related_id=notification.related_id,
+        extra_data=extra_data,
+        created_at=notification.created_at,
+        read_at=notification.read_at,
+    )
+
+
+async def _notify_user_via_ws(notification: Notification):
+    resp = _make_notification_response(notification)
+    await ws_manager.send_personal_message(
+        {"type": "new_notification", "data": resp.model_dump()},
+        notification.user_id,
+    )
+
+
+def _dispatch_notifications_sync(
+    db: Session,
+    category: MessageCategory,
+    title: str,
+    content: str,
+    severity: SeverityLevel = SeverityLevel.INFO,
+    source: Optional[str] = None,
+    related_id: Optional[int] = None,
+    extra_data: Optional[Dict] = None,
+    user_ids: Optional[List[int]] = None,
+    target_roles: Optional[List[UserRole]] = None,
+    target_farm_ids: Optional[List[str]] = None,
+) -> List[Notification]:
+    query = db.query(User)
+    target_users = []
+
+    if user_ids and len(user_ids) > 0:
+        target_users = query.filter(User.id.in_(user_ids)).all()
+    else:
+        if target_roles and len(target_roles) > 0:
+            query = query.filter(User.role.in_(target_roles))
+        users = query.all()
+        if target_farm_ids and len(target_farm_ids) > 0:
+            for u in users:
+                try:
+                    farm_scope = json.loads(u.farm_scope) if u.farm_scope else []
+                except Exception:
+                    farm_scope = []
+                if any(fid in farm_scope for fid in target_farm_ids):
+                    target_users.append(u)
+        else:
+            target_users = users
+
+    extra_json = json.dumps(extra_data, ensure_ascii=False) if extra_data else None
+    created = []
+    for user in target_users:
+        notification = Notification(
+            user_id=user.id,
+            category=category,
+            title=title,
+            content=content,
+            severity=severity,
+            is_read=False,
+            source=source,
+            related_id=related_id,
+            extra_data=extra_json,
+            created_at=datetime.utcnow(),
+        )
+        db.add(notification)
+        created.append(notification)
+    db.commit()
+    for n in created:
+        db.refresh(n)
+    return created
+
+
+# ============ 消息中心 API ============
+
+@app.get("/api/notifications", response_model=NotificationListResponse)
+async def list_notifications(
+    category: Optional[MessageCategory] = None,
+    only_unread: bool = False,
+    page: int = 1,
+    size: int = 50,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    query = db.query(Notification).filter(Notification.user_id == current_user.id)
+    if category:
+        query = query.filter(Notification.category == category)
+    if only_unread:
+        query = query.filter(Notification.is_read == False)
+
+    total = query.count()
+    unread_count = db.query(Notification).filter(
+        Notification.user_id == current_user.id,
+        Notification.is_read == False
+    ).count()
+
+    notifications = query.order_by(Notification.created_at.desc()) \
+        .offset((page - 1) * size) \
+        .limit(size) \
+        .all()
+
+    return NotificationListResponse(
+        items=[_make_notification_response(n) for n in notifications],
+        total=total,
+        unread_count=unread_count,
+    )
+
+
+@app.get("/api/notifications/unread-count", response_model=UnreadCountResponse)
+async def get_unread_count(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    query = db.query(Notification).filter(
+        Notification.user_id == current_user.id,
+        Notification.is_read == False
+    )
+    total = query.count()
+    by_category = {}
+    for cat in MessageCategory:
+        cnt = db.query(Notification).filter(
+            Notification.user_id == current_user.id,
+            Notification.is_read == False,
+            Notification.category == cat,
+        ).count()
+        by_category[cat.value] = cnt
+    return UnreadCountResponse(total=total, by_category=by_category)
+
+
+@app.post("/api/notifications/{notification_id}/read")
+async def mark_notification_read(
+    notification_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    notification = db.query(Notification).filter(
+        Notification.id == notification_id,
+        Notification.user_id == current_user.id,
+    ).first()
+    if not notification:
+        raise HTTPException(status_code=404, detail="消息不存在")
+    notification.is_read = True
+    notification.read_at = datetime.utcnow()
+    db.commit()
+    db.refresh(notification)
+    return {"message": "已标记为已读", "notification": _make_notification_response(notification)}
+
+
+@app.post("/api/notifications/read-all")
+async def mark_all_notifications_read(
+    category: Optional[MessageCategory] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    query = db.query(Notification).filter(
+        Notification.user_id == current_user.id,
+        Notification.is_read == False,
+    )
+    if category:
+        query = query.filter(Notification.category == category)
+    now = datetime.utcnow()
+    count = query.update(
+        {Notification.is_read: True, Notification.read_at: now},
+        synchronize_session=False,
+    )
+    db.commit()
+    return {"message": f"已标记 {count} 条消息为已读", "count": count}
+
+
+@app.delete("/api/notifications/{notification_id}")
+async def delete_notification(
+    notification_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    notification = db.query(Notification).filter(
+        Notification.id == notification_id,
+        Notification.user_id == current_user.id,
+    ).first()
+    if not notification:
+        raise HTTPException(status_code=404, detail="消息不存在")
+    db.delete(notification)
+    db.commit()
+    return {"message": "消息已删除"}
+
+
+@app.post("/api/internal/notifications/dispatch")
+async def dispatch_notification(
+    data: NotificationDispatchRequest,
+    db: Session = Depends(get_db),
+):
+    created = _dispatch_notifications_sync(
+        db=db,
+        category=data.category,
+        title=data.title,
+        content=data.content,
+        severity=data.severity,
+        source=data.source,
+        related_id=data.related_id,
+        extra_data=data.extra_data,
+        user_ids=data.user_ids,
+        target_roles=data.target_roles,
+        target_farm_ids=data.target_farm_ids,
+    )
+    for notification in created:
+        await _notify_user_via_ws(notification)
+    logger.info(f"Dispatched {len(created)} notifications: category={data.category.value}, severity={data.severity.value}")
+    return {
+        "message": f"已分发 {len(created)} 条消息",
+        "count": len(created),
+        "notification_ids": [n.id for n in created],
+    }
+
+
+@app.websocket("/ws/notifications")
+async def websocket_notifications(websocket: WebSocket, token: Optional[str] = None):
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    try:
+        payload = decode_token(token)
+        if payload.get("type") != "access":
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        user_id: Optional[int] = payload.get("user_id")
+        if user_id is None:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+    except Exception:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    await ws_manager.connect(websocket, user_id)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                msg = json.loads(data)
+                if msg.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
+            except Exception:
+                pass
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket, user_id)
+    except Exception:
+        ws_manager.disconnect(websocket, user_id)
 
 
 if __name__ == "__main__":

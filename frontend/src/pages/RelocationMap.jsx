@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+﻿import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
     nectarCalendarApi,
@@ -44,9 +44,9 @@ const STATUS_COLORS = {
 };
 
 const STRENGTH_LEVEL_NAMES = {
-    weak: '�?,
-    medium: '�?,
-    strong: '�?,
+    weak: '弱',
+    medium: '中',
+    strong: '强',
     very_strong: '特强',
 };
 
@@ -316,7 +316,7 @@ function RelocationMap() {
                 source_location_name: `选点 (${roundedLat.toFixed(4)}, ${roundedLng.toFixed(4)})`,
             }));
             setIsPickingSource(false);
-            toast.info('已选择出发�?);
+            toast.info('已选择出发地');
         }
         if (isPickingDestination) {
             setPlanFormData((prev) => ({
@@ -326,7 +326,7 @@ function RelocationMap() {
                 destination_location_name: `选点 (${roundedLat.toFixed(4)}, ${roundedLng.toFixed(4)})`,
             }));
             setIsPickingDestination(false);
-            toast.info('已选择目的�?);
+            toast.info('已选择目的地');
         }
     };
 
@@ -386,10 +386,10 @@ function RelocationMap() {
         try {
             if (editingNectar) {
                 await nectarCalendarApi.update(editingNectar.id, nectarFormData);
-                toast.success('花期日历已更�?);
+                toast.success('花期日历已更新');
             } else {
                 await nectarCalendarApi.create(nectarFormData);
-                toast.success('花期日历已创�?);
+                toast.success('花期日历已创建');
             }
             setShowNectarModal(false);
             fetchNectarCalendars();
@@ -402,10 +402,10 @@ function RelocationMap() {
 
     const handleDeleteNectar = async (id) => {
         if (!canDelete) return;
-        if (!window.confirm('确定要删除这个花期日历吗�?)) return;
+        if (!window.confirm('确定要删除这个花期日历吗？')) return;
         try {
             await nectarCalendarApi.remove(id);
-            toast.success('已删�?);
+            toast.success('已删除');
             setShowNectarModal(false);
             setSelectedNectar(null);
             fetchNectarCalendars();
@@ -471,10 +471,10 @@ function RelocationMap() {
             };
             if (editingPlan) {
                 await relocationPlanApi.update(editingPlan.id, submitData);
-                toast.success('转场计划已更�?);
+                toast.success('转场计划已更新');
             } else {
                 await relocationPlanApi.create(submitData);
-                toast.success('转场计划已创�?);
+                toast.success('转场计划已创建');
             }
             setShowPlanModal(false);
             fetchRelocationPlans();
@@ -489,7 +489,7 @@ function RelocationMap() {
         if (!canUpdate) return;
         try {
             await relocationPlanApi.start(planId);
-            toast.success('转场已开�?);
+            toast.success('转场已开始');
             fetchRelocationPlans();
         } catch (err) {
             toast.error(err.response?.data?.detail || '操作失败');
@@ -498,10 +498,10 @@ function RelocationMap() {
 
     const handleCompleteRelocation = async (planId) => {
         if (!canUpdate) return;
-        if (!window.confirm('确定要完成转场吗？这将批量更新所有蜂箱的所属蜂场�?)) return;
+        if (!window.confirm('确定要完成转场吗？这将批量更新所有蜂箱的所属蜂场。')) return;
         try {
             await relocationPlanApi.complete(planId);
-            toast.success('转场已完成，蜂箱归属已更�?);
+            toast.success('转场已完成，蜂箱归属已更新');
             fetchRelocationPlans();
         } catch (err) {
             toast.error(err.response?.data?.detail || '操作失败');
@@ -510,10 +510,10 @@ function RelocationMap() {
 
     const handleCancelRelocation = async (planId) => {
         if (!canUpdate) return;
-        if (!window.confirm('确定要取消这个转场计划吗�?)) return;
+        if (!window.confirm('确定要取消这个转场计划吗？')) return;
         try {
             await relocationPlanApi.cancel(planId);
-            toast.success('转场已取�?);
+            toast.success('转场已取消');
             fetchRelocationPlans();
         } catch (err) {
             toast.error(err.response?.data?.detail || '操作失败');
@@ -671,9 +671,9 @@ function RelocationMap() {
                         <div className="glass-card rounded-3xl p-6">
                             <div className="flex justify-between items-center mb-4">
                                 <div>
-                                    <h3 className="text-lg font-semibold text-white">未来 60 天花期分�?/h3>
+                                    <h3 className="text-lg font-semibold text-white">未来 60 天花期分布</h3>
                                     <p className="text-sm text-slate-400">
-                                        �?{nectarCalendars.length} 个蜜源花期点
+                                        共 {nectarCalendars.length} 个蜜源花期点
                                     </p>
                                 </div>
                                 <div className="flex items-center gap-2">
@@ -775,12 +775,14 @@ function RelocationMap() {
                                             <g transform={`translate(${latLngToSvg(planFormData.source_lat, planFormData.source_lng).x}, ${latLngToSvg(planFormData.source_lat, planFormData.source_lng).y})`}>
                                                 <circle r="10" fill="#3b82f6" stroke="#fff" strokeWidth="2" />
                                                 <text y={-15} textAnchor="middle" className="text-xs fill-blue-400 font-medium" style={{ fontSize: '10px' }}>
-                                                    出发�?                                                </text>
+                                                    出发地
+                                                </text>
                                             </g>
                                             <g transform={`translate(${latLngToSvg(planFormData.destination_lat, planFormData.destination_lng).x}, ${latLngToSvg(planFormData.destination_lat, planFormData.destination_lng).y})`}>
                                                 <circle r="10" fill="#f59e0b" stroke="#fff" strokeWidth="2" />
                                                 <text y={-15} textAnchor="middle" className="text-xs fill-amber-400 font-medium" style={{ fontSize: '10px' }}>
-                                                    目的�?                                                </text>
+                                                    目的地
+                                                </text>
                                             </g>
                                             <line
                                                 x1={latLngToSvg(planFormData.source_lat, planFormData.source_lng).x}
@@ -797,7 +799,7 @@ function RelocationMap() {
 
                                 {(isPickingSource || isPickingDestination) && (
                                     <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-2 bg-amber-500/90 text-white rounded-lg font-medium text-sm">
-                                        {isPickingSource ? '点击地图选择出发�? : '点击地图选择目的�?}
+                                        {isPickingSource ? '点击地图选择出发地' : '点击地图选择目的地'}
                                         <button
                                             onClick={() => {
                                                 setIsPickingSource(false);
@@ -850,15 +852,16 @@ function RelocationMap() {
                                     </div>
                                     <div className="grid grid-cols-3 gap-4 mt-4">
                                         <div>
-                                            <p className="text-xs text-slate-500">开花时�?/p>
+                                            <p className="text-xs text-slate-500">开花时间</p>
                                             <p className="text-sm text-white font-medium">
                                                 {formatDate(selectedNectar.bloom_start_date)} ~ {formatDate(selectedNectar.bloom_end_date)}
                                             </p>
                                         </div>
                                         <div>
-                                            <p className="text-xs text-slate-500">可承载蜂�?/p>
+                                            <p className="text-xs text-slate-500">可承载蜂群</p>
                                             <p className="text-sm text-white font-medium">
-                                                {selectedNectar.max_hive_capacity} �?                                            </p>
+                                                {selectedNectar.max_hive_capacity} 群
+                                            </p>
                                         </div>
                                         <div>
                                             <p className="text-xs text-slate-500">蜜质等级</p>
@@ -933,7 +936,7 @@ function RelocationMap() {
                                                     <div>
                                                         <h4 className="font-semibold text-white">{plan.plan_name}</h4>
                                                         <p className="text-sm text-slate-400">
-                                                            {plan.source_location_name} �?{plan.destination_location_name}
+                                                            {plan.source_location_name} → {plan.destination_location_name}
                                                         </p>
                                                     </div>
                                                 </div>
@@ -958,12 +961,14 @@ function RelocationMap() {
                                                 <div>
                                                     <p className="text-xs text-slate-500">装车蜂箱</p>
                                                     <p className="text-sm text-white font-medium">
-                                                        {plan.hive_list?.length || 0} �?                                                    </p>
+                                                        {plan.hive_list?.length || 0} 箱
+                                                    </p>
                                                 </div>
                                                 <div>
                                                     <p className="text-xs text-slate-500">随行人员</p>
                                                     <p className="text-sm text-white font-medium">
-                                                        {plan.beekeepers?.length || 0} �?                                                    </p>
+                                                        {plan.beekeepers?.length || 0} 人
+                                                    </p>
                                                 </div>
                                             </div>
 
@@ -995,7 +1000,8 @@ function RelocationMap() {
                                                             className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium flex items-center gap-1.5 transition-colors"
                                                         >
                                                             <Play className="w-3.5 h-3.5" />
-                                                            开始转�?                                                        </button>
+                                                            开始转场
+                                                        </button>
                                                         <button
                                                             onClick={() => handleCancelRelocation(plan.id)}
                                                             className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm font-medium transition-colors ml-auto"
@@ -1033,7 +1039,8 @@ function RelocationMap() {
                                             onClick={() => openPlanModal()}
                                             className="mt-4 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors"
                                         >
-                                            创建第一个转场计�?                                        </button>
+                                            创建第一个转场计划
+                                        </button>
                                     )}
                                 </div>
                             )}
@@ -1079,7 +1086,7 @@ function RelocationMap() {
                                         value={nectarFormData.plant_name}
                                         onChange={(e) => setNectarFormData({ ...nectarFormData, plant_name: e.target.value })}
                                         className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-white focus:outline-none focus:border-emerald-500"
-                                        placeholder="如：江西油菜�?
+                                        placeholder="如：江西油菜花"
                                         required
                                     />
                                 </div>
@@ -1124,7 +1131,7 @@ function RelocationMap() {
 
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
-                                    <label className="block text-sm text-slate-400 mb-1.5">开花开始日�?/label>
+                                    <label className="block text-sm text-slate-400 mb-1.5">开花开始日期</label>
                                     <input
                                         type="datetime-local"
                                         value={nectarFormData.bloom_start_date}
@@ -1134,7 +1141,7 @@ function RelocationMap() {
                                     />
                                 </div>
                                 <div>
-                                    <label className="block text-sm text-slate-400 mb-1.5">开花结束日�?/label>
+                                    <label className="block text-sm text-slate-400 mb-1.5">开花结束日期</label>
                                     <input
                                         type="datetime-local"
                                         value={nectarFormData.bloom_end_date}
@@ -1175,7 +1182,7 @@ function RelocationMap() {
                                     onChange={(e) => setNectarFormData({ ...nectarFormData, notes: e.target.value })}
                                     className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-white focus:outline-none focus:border-emerald-500 resize-none"
                                     rows="3"
-                                    placeholder="可选备注信�?
+                                    placeholder="可选备注信息"
                                 />
                             </div>
 
@@ -1232,7 +1239,7 @@ function RelocationMap() {
                                 <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/30">
                                     <div className="flex items-center gap-2 mb-3">
                                         <Navigation className="w-4 h-4 text-blue-400" />
-                                        <span className="text-sm font-medium text-blue-400">出发�?/span>
+                                        <span className="text-sm font-medium text-blue-400">出发地</span>
                                     </div>
                                     <div className="space-y-3">
                                         <div>
@@ -1292,7 +1299,7 @@ function RelocationMap() {
                                 <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30">
                                     <div className="flex items-center gap-2 mb-3">
                                         <MapPin className="w-4 h-4 text-amber-400" />
-                                        <span className="text-sm font-medium text-amber-400">目的�?/span>
+                                        <span className="text-sm font-medium text-amber-400">目的地</span>
                                     </div>
                                     <div className="space-y-3">
                                         <div>
@@ -1361,7 +1368,7 @@ function RelocationMap() {
                                     {estimatingDistance ? (
                                         <div className="flex items-center gap-1.5 text-slate-400 text-sm">
                                             <Loader2 className="w-4 h-4 animate-spin" />
-                                            计算�?..
+                                            计算中...
                                         </div>
                                     ) : distanceEstimate ? (
                                         <div className="text-right">
@@ -1475,7 +1482,7 @@ function RelocationMap() {
                                                             </select>
                                                         </div>
                                                         <div>
-                                                            <span className="text-slate-500">蜂王�?/span>
+                                                            <span className="text-slate-500">蜂王：</span>
                                                             <select
                                                                 value={item.queen_status}
                                                                 onChange={(e) => updateChecklistItem(item.hive_id, 'queen_status', e.target.value)}
@@ -1487,7 +1494,7 @@ function RelocationMap() {
                                                             </select>
                                                         </div>
                                                         <div>
-                                                            <span className="text-slate-500">巢框�?/span>
+                                                            <span className="text-slate-500">巢框：</span>
                                                             <input
                                                                 type="number"
                                                                 value={item.frame_count}
@@ -1522,7 +1529,7 @@ function RelocationMap() {
                                     onChange={(e) => setPlanFormData({ ...planFormData, notes: e.target.value })}
                                     className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-white focus:outline-none focus:border-blue-500 resize-none"
                                     rows="2"
-                                    placeholder="可选备注信�?
+                                    placeholder="可选备注信息"
                                 />
                             </div>
 
@@ -1665,14 +1672,14 @@ function RelocationMap() {
                                                                 </span>
                                                             </div>
                                                             <div>
-                                                                <span className="text-slate-500">蜂王�?/span>
+                                                                <span className="text-slate-500">蜂王：</span>
                                                                 <span className="text-slate-300">
                                                                     {QUEEN_STATUS_OPTIONS.find((o) => o.value === item.queen_status)?.label || item.queen_status}
                                                                 </span>
                                                             </div>
                                                             <div>
-                                                                <span className="text-slate-500">巢框�?/span>
-                                                                <span className="text-slate-300">{item.frame_count} �?/span>
+                                                                <span className="text-slate-500">巢框：</span>
+                                                                <span className="text-slate-300">{item.frame_count} 个</span>
                                                             </div>
                                                         </div>
                                                         {item.notes && (
@@ -1693,9 +1700,11 @@ function RelocationMap() {
                         <div className="p-5 border-t border-slate-700">
                             <div className="flex items-center justify-between text-sm">
                                 <span className="text-slate-400">
-                                    �?{checklistItems.length} �?                                </span>
+                                    共 {checklistItems.length} 箱
+                                </span>
                                 <span className="text-emerald-400">
-                                    已检�?{checklistItems.filter((i) => i.is_checked).length} �?                                </span>
+                                    已检查 {checklistItems.filter((i) => i.is_checked).length} 箱
+                                </span>
                             </div>
                         </div>
                     </div>

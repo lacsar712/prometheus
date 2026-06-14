@@ -11,3 +11,4 @@ ENV/
 node_modules/
 dist/
 build/
+trae/

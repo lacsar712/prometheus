@@ -9,8 +9,8 @@ RUN npm config set registry https://registry.npmmirror.com
 # 拷贝依赖配置
 COPY package*.json ./
 
-# 安装依赖
-RUN npm ci
+# 安装依赖（使用 npm install 以兼容 package.json 与 lock 文件不完全同步的情况）
+RUN npm install
 
 # 拷贝代码并构建
 COPY . .

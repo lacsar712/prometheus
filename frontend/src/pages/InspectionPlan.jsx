@@ -60,8 +60,8 @@ const getCountdown = (nextRunAt) => {
     if (diffMs <= 0) return '即将执行';
     const diffSecs = Math.floor(diffMs / 1000);
     const days = Math.floor(diffSecs / 86400);
-    const hours = Math.floor((diffSecs % 86400) / 3600;
-    const minutes = Math.floor((diffSecs % 3600) / 60;
+    const hours = Math.floor((diffSecs % 86400) / 3600);
+    const minutes = Math.floor((diffSecs % 3600) / 60);
     const seconds = diffSecs % 60;
     if (days > 0) return `${days}天${hours}小时后`;
     if (hours > 0) return `${hours}小时${minutes}分后`;
@@ -143,7 +143,7 @@ function InspectionPlan() {
     }, [fetchPlans, fetchExecutionLogs, fetchTemplates]);
 
     useEffect(() => {
-        const interval = setInterval(() => setTick((t) => t + 1),
+        const interval = setInterval(() => setTick((t) => t + 1), 1000);
         return () => clearInterval(interval);
     }, []);
 
@@ -559,31 +559,33 @@ function InspectionPlan() {
 
                         <form onSubmit={handleSubmit} className="p-6 space-y-5">
                             {!editingPlan && templates.length > 0 && (
-                                <div>
-                                    <label className="block text-sm font-medium text-slate-300 mb-2 flex items-center gap-1.5">
-                                        <Sparkles className="w-4 h-4 text-violet-400" />
-                                        快捷模板
-                                    </label>
-                                    <div className="grid grid-cols-3 gap-2">
-                                        {templates.map((tpl) => (
-                                            <button
-                                                key={tpl.season}
-                                                type="button"
-                                                onClick={() => applyTemplate(tpl)}
-                                                className="p-3 rounded-xl border text-left transition-all hover:scale-[1.02] border-slate-700 hover:border-violet-500/50 bg-slate-800 hover:bg-violet-500/10"
-                                            >
-                                                <div className="flex items-center gap-2 mb-1">
-                                                    <span className={`px-2 py-0.5 rounded text-xs font-medium border ${SEASON_COLORS[tpl.season]}`}>
-                                                        {tpl.season_name}
-                                                    </span>
-                                                </div>
-                                                <div className="text-sm font-medium text-white mt-1.5">{tpl.name}</div>
-                                                <div className="text-xs text-slate-500 mt-0.5 line-clamp-1">{tpl.description}</div>
-                                            </button>
-                                        ))}
+                                <>
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-300 mb-2 flex items-center gap-1.5">
+                                            <Sparkles className="w-4 h-4 text-violet-400" />
+                                            快捷模板
+                                        </label>
+                                        <div className="grid grid-cols-3 gap-2">
+                                            {templates.map((tpl) => (
+                                                <button
+                                                    key={tpl.season}
+                                                    type="button"
+                                                    onClick={() => applyTemplate(tpl)}
+                                                    className="p-3 rounded-xl border text-left transition-all hover:scale-[1.02] border-slate-700 hover:border-violet-500/50 bg-slate-800 hover:bg-violet-500/10"
+                                                >
+                                                    <div className="flex items-center gap-2 mb-1">
+                                                        <span className={`px-2 py-0.5 rounded text-xs font-medium border ${SEASON_COLORS[tpl.season]}`}>
+                                                            {tpl.season_name}
+                                                        </span>
+                                                    </div>
+                                                    <div className="text-sm font-medium text-white mt-1.5">{tpl.name}</div>
+                                                    <div className="text-xs text-slate-500 mt-0.5 line-clamp-1">{tpl.description}</div>
+                                                </button>
+                                            ))}
+                                        </div>
                                     </div>
-                                </div>
-                                <div className="h-px bg-slate-700/50 my-4" />
+                                    <div className="h-px bg-slate-700/50 my-4" />
+                                </>
                             )}
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

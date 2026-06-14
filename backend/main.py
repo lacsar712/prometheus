@@ -19,6 +19,11 @@ from pydantic import BaseModel, EmailStr, Field, validator
 from fastapi.responses import StreamingResponse, JSONResponse
 import io
 import csv
+# bcrypt>=4.0 移除了 __about__ 属性，而 passlib 1.7.4 在初始化时仍会读取它。
+# 加一个垫片，避免启动期 trapped warning（实际功能不受影响）。
+import bcrypt as _bcrypt
+if not hasattr(_bcrypt, "__about__"):
+    _bcrypt.__about__ = type("about", (), {"__version__": getattr(_bcrypt, "__version__", "0.0.0")})()
 from passlib.context import CryptContext
 import jwt
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -1633,11 +1638,19 @@ def is_device_banned(device_id: str, db: Session) -> bool:
     return True
 
 # 工具函数
+def _truncate_password_to_bcrypt_limit(password: str) -> str:
+    """bcrypt 限制密码不超过 72 字节，按 utf-8 字节安全截断，避免破坏多字节字符。"""
+    encoded = password.encode("utf-8")
+    if len(encoded) <= 72:
+        return password
+    return encoded[:72].decode("utf-8", errors="ignore")
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    return pwd_context.verify(_truncate_password_to_bcrypt_limit(plain_password), hashed_password)
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    return pwd_context.hash(_truncate_password_to_bcrypt_limit(password))
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
@@ -2395,6 +2408,15 @@ def _make_api_key_response(key: ApiKey) -> ApiKeyResponse:
     )
 
 
+# 依赖项：获取数据库会话
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 # 依赖项：获取当前登录用户
 async def get_current_user(
     token: Optional[str] = Depends(oauth2_scheme),
@@ -2836,14 +2858,6 @@ async def api_key_auth_middleware(request: Request, call_next):
     response = await call_next(request)
     return response
 
-
-# 依赖项：获取数据库会话
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 # Prometheus 监控配置
 instrumentator = Instrumentator(

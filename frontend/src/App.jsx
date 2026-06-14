@@ -11,6 +11,7 @@ import InspectionPlan from './pages/InspectionPlan';
 import SensorFlowControl from './pages/SensorFlowControl';
 import ApiKeys from './pages/ApiKeys';
 import RelocationMap from './pages/RelocationMap';
+import FarmConfig from './pages/FarmConfig';
 
 function App() {
     return (
@@ -73,6 +74,14 @@ function App() {
                             element={
                                 <ProtectedRoute>
                                     <RelocationMap />
+                                </ProtectedRoute>
+                            }
+                        />
+                        <Route
+                            path="/farm-config"
+                            element={
+                                <ProtectedRoute>
+                                    <FarmConfig />
                                 </ProtectedRoute>
                             }
                         />

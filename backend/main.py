@@ -322,6 +322,88 @@ class DeviceBan(Base):
     banned_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
 
+# ========== 配置中心相关枚举 ==========
+class ConfigValueType(str, PyEnum):
+    BOOLEAN = "boolean"
+    NUMBER = "number"
+    STRING = "string"
+    SELECT = "select"
+    SLIDER = "slider"
+
+CONFIG_VALUE_TYPE_NAMES = {
+    ConfigValueType.BOOLEAN: "开关",
+    ConfigValueType.NUMBER: "数字",
+    ConfigValueType.STRING: "文本",
+    ConfigValueType.SELECT: "下拉选择",
+    ConfigValueType.SLIDER: "滑块",
+}
+
+class ConfigScope(str, PyEnum):
+    GLOBAL = "global"
+    FARM = "farm"
+
+CONFIG_SCOPE_NAMES = {
+    ConfigScope.GLOBAL: "全局",
+    ConfigScope.FARM: "蜂场",
+}
+
+class ConfigCategory(str, PyEnum):
+    TEMPERATURE_ALERT = "temperature_alert"
+    INSPECTION = "inspection"
+    SENSOR = "sensor"
+    NOTIFICATION = "notification"
+    SYSTEM = "system"
+    RATE_LIMIT = "rate_limit"
+
+CONFIG_CATEGORY_NAMES = {
+    ConfigCategory.TEMPERATURE_ALERT: "温度告警",
+    ConfigCategory.INSPECTION: "巡检管理",
+    ConfigCategory.SENSOR: "传感器",
+    ConfigCategory.NOTIFICATION: "通知告警",
+    ConfigCategory.SYSTEM: "系统设置",
+    ConfigCategory.RATE_LIMIT: "限流设置",
+}
+
+
+# ========== 配置中心数据库模型 ==========
+class ConfigItem(Base):
+    __tablename__ = "config_items"
+    id = Column(Integer, primary_key=True, index=True)
+    config_key = Column(String(100), nullable=False, index=True)
+    name = Column(String(200), nullable=False)
+    value = Column(Text, nullable=False)
+    value_type = Column(Enum(ConfigValueType), nullable=False)
+    scope = Column(Enum(ConfigScope), nullable=False, default=ConfigScope.GLOBAL)
+    farm_id = Column(String(100), nullable=True, index=True)
+    category = Column(Enum(ConfigCategory), nullable=False, default=ConfigCategory.SYSTEM)
+    description = Column(Text, nullable=True)
+    options = Column(Text, nullable=True)
+    min_value = Column(Float, nullable=True)
+    max_value = Column(Float, nullable=True)
+    step = Column(Float, nullable=True)
+    last_modified_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    last_modified_by_username = Column(String(50), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('config_key', 'scope', 'farm_id', name='_config_key_scope_farm_uc'),
+    )
+
+
+class ConfigChangeLog(Base):
+    __tablename__ = "config_change_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    config_item_id = Column(Integer, ForeignKey("config_items.id"), nullable=False, index=True)
+    config_key = Column(String(100), nullable=False, index=True)
+    old_value = Column(Text, nullable=True)
+    new_value = Column(Text, nullable=False)
+    changed_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    changed_by_username = Column(String(50), nullable=False)
+    change_reason = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 # ========== API Key 业务范围枚举 ==========
 class ApiKeyScope(str, PyEnum):
     SENSOR_READ = "sensor_data:read"
@@ -774,6 +856,58 @@ class NectarCalendarListResponse(BaseModel):
     total: int
     page: int
     size: int
+
+
+# ========== 配置中心 Pydantic 模型 ==========
+class ConfigItemResponse(BaseModel):
+    id: int
+    config_key: str
+    name: str
+    value: str
+    value_type: ConfigValueType
+    value_type_name: str
+    scope: ConfigScope
+    scope_name: str
+    farm_id: Optional[str]
+    category: ConfigCategory
+    category_name: str
+    description: Optional[str]
+    options: Optional[List[Dict]]
+    min_value: Optional[float]
+    max_value: Optional[float]
+    step: Optional[float]
+    last_modified_by: Optional[int]
+    last_modified_by_username: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ConfigItemListResponse(BaseModel):
+    items: List[ConfigItemResponse]
+    total: int
+
+
+class ConfigChangeLogResponse(BaseModel):
+    id: int
+    config_item_id: int
+    config_key: str
+    old_value: Optional[str]
+    new_value: str
+    changed_by: int
+    changed_by_username: str
+    change_reason: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ConfigUpdateRequest(BaseModel):
+    value: str
+    change_reason: Optional[str] = None
 
 
 # ========== 转场计划 Pydantic 模型 ==========
@@ -2344,6 +2478,260 @@ def init_storage():
             retries -= 1
             time.sleep(5)
 
+
+# ========== 配置中心全局缓存 ==========
+_config_cache: Dict[str, ConfigItem] = {}
+
+
+def _get_config_cache_key(config_key: str, scope: ConfigScope, farm_id: Optional[str] = None) -> str:
+    if scope == ConfigScope.GLOBAL:
+        return f"global:{config_key}"
+    return f"farm:{farm_id}:{config_key}"
+
+
+def load_configs_to_cache():
+    db = SessionLocal()
+    try:
+        configs = db.query(ConfigItem).all()
+        _config_cache.clear()
+        for cfg in configs:
+            key = _get_config_cache_key(cfg.config_key, cfg.scope, cfg.farm_id)
+            _config_cache[key] = cfg
+        logger.info(f"Loaded {len(configs)} config items into cache")
+    except Exception as e:
+        logger.error(f"Failed to load configs to cache: {e}")
+    finally:
+        db.close()
+
+
+def get_cached_config(config_key: str, scope: ConfigScope = ConfigScope.GLOBAL, farm_id: Optional[str] = None) -> Optional[ConfigItem]:
+    key = _get_config_cache_key(config_key, scope, farm_id)
+    return _config_cache.get(key)
+
+
+def get_config_value(config_key: str, default: str = "", scope: ConfigScope = ConfigScope.GLOBAL, farm_id: Optional[str] = None) -> str:
+    cfg = get_cached_config(config_key, scope, farm_id)
+    if cfg:
+        return cfg.value
+    if scope == ConfigScope.FARM and farm_id:
+        cfg = get_cached_config(config_key, ConfigScope.GLOBAL)
+        if cfg:
+            return cfg.value
+    return default
+
+
+def update_config_cache(config_item: ConfigItem):
+    key = _get_config_cache_key(config_item.config_key, config_item.scope, config_item.farm_id)
+    _config_cache[key] = config_item
+
+
+# ========== 预置配置定义 ==========
+PRESET_CONFIGS = [
+    {
+        "config_key": "high_temp_threshold",
+        "name": "高温告警阈值",
+        "value": "38.0",
+        "value_type": ConfigValueType.NUMBER,
+        "scope": ConfigScope.GLOBAL,
+        "farm_id": None,
+        "category": ConfigCategory.TEMPERATURE_ALERT,
+        "description": "当蜂箱内温度超过此值时触发高温告警（单位：摄氏度）",
+        "options": None,
+        "min_value": 20.0,
+        "max_value": 50.0,
+        "step": 0.5,
+    },
+    {
+        "config_key": "low_temp_threshold",
+        "name": "低温告警阈值",
+        "value": "10.0",
+        "value_type": ConfigValueType.NUMBER,
+        "scope": ConfigScope.GLOBAL,
+        "farm_id": None,
+        "category": ConfigCategory.TEMPERATURE_ALERT,
+        "description": "当蜂箱内温度低于此值时触发低温告警（单位：摄氏度）",
+        "options": None,
+        "min_value": -20.0,
+        "max_value": 25.0,
+        "step": 0.5,
+    },
+    {
+        "config_key": "weight_loss_alert_threshold",
+        "name": "失重告警阈值",
+        "value": "5.0",
+        "value_type": ConfigValueType.SLIDER,
+        "scope": ConfigScope.GLOBAL,
+        "farm_id": None,
+        "category": ConfigCategory.SENSOR,
+        "description": "蜂箱重量日下降幅度超过此值时触发失重告警（单位：千克）",
+        "options": None,
+        "min_value": 0.5,
+        "max_value": 20.0,
+        "step": 0.5,
+    },
+    {
+        "config_key": "inspection_cycle_days",
+        "name": "巡检周期天数",
+        "value": "7",
+        "value_type": ConfigValueType.NUMBER,
+        "scope": ConfigScope.GLOBAL,
+        "farm_id": None,
+        "category": ConfigCategory.INSPECTION,
+        "description": "常规巡检的周期，超过此天数未巡检的蜂箱将被标记为待巡检",
+        "options": None,
+        "min_value": 1,
+        "max_value": 30,
+        "step": 1,
+    },
+    {
+        "config_key": "sensor_offline_duration",
+        "name": "传感器掉线判定时长",
+        "value": "30",
+        "value_type": ConfigValueType.SELECT,
+        "scope": ConfigScope.GLOBAL,
+        "farm_id": None,
+        "category": ConfigCategory.SENSOR,
+        "description": "传感器超过此时长未上报数据则判定为掉线（单位：分钟）",
+        "options": json.dumps([
+            {"label": "10分钟", "value": "10"},
+            {"label": "30分钟", "value": "30"},
+            {"label": "1小时", "value": "60"},
+            {"label": "2小时", "value": "120"},
+            {"label": "6小时", "value": "360"},
+            {"label": "24小时", "value": "1440"},
+        ], ensure_ascii=False),
+        "min_value": None,
+        "max_value": None,
+        "step": None,
+    },
+    {
+        "config_key": "email_alert_enabled",
+        "name": "邮件告警开关",
+        "value": "true",
+        "value_type": ConfigValueType.BOOLEAN,
+        "scope": ConfigScope.GLOBAL,
+        "farm_id": None,
+        "category": ConfigCategory.NOTIFICATION,
+        "description": "是否启用邮件告警通知",
+        "options": None,
+        "min_value": None,
+        "max_value": None,
+        "step": None,
+    },
+    {
+        "config_key": "maintenance_mode",
+        "name": "维护模式开关",
+        "value": "false",
+        "value_type": ConfigValueType.BOOLEAN,
+        "scope": ConfigScope.GLOBAL,
+        "farm_id": None,
+        "category": ConfigCategory.SYSTEM,
+        "description": "开启后系统进入维护模式，暂停告警通知和自动化任务",
+        "options": None,
+        "min_value": None,
+        "max_value": None,
+        "step": None,
+    },
+    {
+        "config_key": "log_level",
+        "name": "日志级别",
+        "value": "INFO",
+        "value_type": ConfigValueType.SELECT,
+        "scope": ConfigScope.GLOBAL,
+        "farm_id": None,
+        "category": ConfigCategory.SYSTEM,
+        "description": "系统日志输出级别",
+        "options": json.dumps([
+            {"label": "DEBUG", "value": "DEBUG"},
+            {"label": "INFO", "value": "INFO"},
+            {"label": "WARNING", "value": "WARNING"},
+            {"label": "ERROR", "value": "ERROR"},
+        ], ensure_ascii=False),
+        "min_value": None,
+        "max_value": None,
+        "step": None,
+    },
+    {
+        "config_key": "sensor_rate_limit",
+        "name": "传感器数据限流阈值",
+        "value": "60",
+        "value_type": ConfigValueType.NUMBER,
+        "scope": ConfigScope.GLOBAL,
+        "farm_id": None,
+        "category": ConfigCategory.RATE_LIMIT,
+        "description": "单传感器每分钟上报数据的最大次数限制",
+        "options": None,
+        "min_value": 1,
+        "max_value": 600,
+        "step": 1,
+    },
+    {
+        "config_key": "alert_severity_level",
+        "name": "告警严重程度阈值",
+        "value": "WARNING",
+        "value_type": ConfigValueType.SELECT,
+        "scope": ConfigScope.GLOBAL,
+        "farm_id": None,
+        "category": ConfigCategory.NOTIFICATION,
+        "description": "达到此级别及以上的告警才会触发通知",
+        "options": json.dumps([
+            {"label": "提示(INFO)", "value": "INFO"},
+            {"label": "警告(WARNING)", "value": "WARNING"},
+            {"label": "严重(CRITICAL)", "value": "CRITICAL"},
+        ], ensure_ascii=False),
+        "min_value": None,
+        "max_value": None,
+        "step": None,
+    },
+]
+
+
+def init_preset_configs():
+    db = SessionLocal()
+    try:
+        created_count = 0
+        for preset in PRESET_CONFIGS:
+            existing = db.query(ConfigItem).filter(
+                ConfigItem.config_key == preset["config_key"],
+                ConfigItem.scope == preset["scope"],
+                ConfigItem.farm_id == preset["farm_id"],
+            ).first()
+            if not existing:
+                config_item = ConfigItem(
+                    config_key=preset["config_key"],
+                    name=preset["name"],
+                    value=preset["value"],
+                    value_type=preset["value_type"],
+                    scope=preset["scope"],
+                    farm_id=preset["farm_id"],
+                    category=preset["category"],
+                    description=preset["description"],
+                    options=preset["options"],
+                    min_value=preset["min_value"],
+                    max_value=preset["max_value"],
+                    step=preset["step"],
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+                db.add(config_item)
+                created_count += 1
+        if created_count > 0:
+            db.commit()
+            logger.info(f"Initialized {created_count} preset config items")
+        else:
+            logger.info("All preset configs already exist, skipping initialization")
+    except Exception as e:
+        logger.error(f"Failed to initialize preset configs: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def init_config_center():
+    init_preset_configs()
+    load_configs_to_cache()
+
+
 app = FastAPI(title="FastAPI Prometheus Demo")
 
 # CORS 配置
@@ -2472,6 +2860,7 @@ async def startup_event():
     init_db()
     init_storage()
     init_scheduler()
+    init_config_center()
     logger.info("Application started.")
 
 @app.get("/")
@@ -5124,6 +5513,233 @@ async def list_relocation_logs(
         "page": page,
         "size": size,
     }
+
+
+# ============ 配置中心辅助函数 ============
+
+def _make_config_item_response(item: ConfigItem) -> ConfigItemResponse:
+    try:
+        options = json.loads(item.options) if item.options else None
+    except Exception:
+        options = None
+
+    return ConfigItemResponse(
+        id=item.id,
+        config_key=item.config_key,
+        name=item.name,
+        value=item.value,
+        value_type=item.value_type,
+        value_type_name=CONFIG_VALUE_TYPE_NAMES.get(item.value_type, item.value_type.value),
+        scope=item.scope,
+        scope_name=CONFIG_SCOPE_NAMES.get(item.scope, item.scope.value),
+        farm_id=item.farm_id,
+        category=item.category,
+        category_name=CONFIG_CATEGORY_NAMES.get(item.category, item.category.value),
+        description=item.description,
+        options=options,
+        min_value=item.min_value,
+        max_value=item.max_value,
+        step=item.step,
+        last_modified_by=item.last_modified_by,
+        last_modified_by_username=item.last_modified_by_username,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+def _make_config_change_log_response(log: ConfigChangeLog) -> ConfigChangeLogResponse:
+    return ConfigChangeLogResponse(
+        id=log.id,
+        config_item_id=log.config_item_id,
+        config_key=log.config_key,
+        old_value=log.old_value,
+        new_value=log.new_value,
+        changed_by=log.changed_by,
+        changed_by_username=log.changed_by_username,
+        change_reason=log.change_reason,
+        created_at=log.created_at,
+    )
+
+
+def _validate_config_value(value: str, value_type: ConfigValueType,
+                           min_value: Optional[float] = None,
+                           max_value: Optional[float] = None,
+                           options: Optional[List[Dict]] = None) -> bool:
+    if value_type == ConfigValueType.BOOLEAN:
+        return value.lower() in ("true", "false", "1", "0")
+    elif value_type == ConfigValueType.NUMBER or value_type == ConfigValueType.SLIDER:
+        try:
+            num_val = float(value)
+            if min_value is not None and num_val < min_value:
+                return False
+            if max_value is not None and num_val > max_value:
+                return False
+            return True
+        except (ValueError, TypeError):
+            return False
+    elif value_type == ConfigValueType.SELECT:
+        if not options:
+            return True
+        valid_values = [opt.get("value") for opt in options]
+        return value in valid_values
+    return True
+
+
+# ============ 配置中心 API ============
+
+@app.get("/api/configs/meta/categories")
+async def get_config_categories(
+    current_user: User = Depends(get_current_user),
+):
+    """获取配置分类列表"""
+    categories = []
+    for cat in ConfigCategory:
+        categories.append({
+            "key": cat.value,
+            "name": CONFIG_CATEGORY_NAMES.get(cat, cat.value),
+        })
+    return {"items": categories}
+
+
+@app.get("/api/configs/meta/scopes")
+async def get_config_scopes(
+    current_user: User = Depends(get_current_user),
+):
+    """获取配置作用域列表"""
+    scopes = []
+    for scope in ConfigScope:
+        scopes.append({
+            "key": scope.value,
+            "name": CONFIG_SCOPE_NAMES.get(scope, scope.value),
+        })
+    return {"items": scopes}
+
+
+@app.get("/api/configs", response_model=ConfigItemListResponse)
+async def list_configs(
+    scope: Optional[ConfigScope] = None,
+    category: Optional[ConfigCategory] = None,
+    farm_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取配置列表，支持按作用域、分类、蜂场过滤"""
+    query = db.query(ConfigItem)
+
+    if scope:
+        query = query.filter(ConfigItem.scope == scope)
+    if category:
+        query = query.filter(ConfigItem.category == category)
+    if farm_id:
+        query = query.filter(
+            (ConfigItem.scope == ConfigScope.GLOBAL) |
+            ((ConfigItem.scope == ConfigScope.FARM) & (ConfigItem.farm_id == farm_id))
+        )
+
+    total = query.count()
+    items = query.order_by(ConfigItem.category.asc(), ConfigItem.config_key.asc()).all()
+
+    return ConfigItemListResponse(
+        items=[_make_config_item_response(item) for item in items],
+        total=total,
+    )
+
+
+@app.get("/api/configs/{config_id}", response_model=ConfigItemResponse)
+async def get_config(
+    config_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取单个配置详情"""
+    item = db.query(ConfigItem).filter(ConfigItem.id == config_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="配置项不存在")
+    return _make_config_item_response(item)
+
+
+@app.put("/api/configs/{config_id}", response_model=ConfigItemResponse)
+async def update_config(
+    config_id: int,
+    data: ConfigUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"])),
+):
+    """更新配置项值，记录变更日志，即时生效"""
+    item = db.query(ConfigItem).filter(ConfigItem.id == config_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="配置项不存在")
+
+    try:
+        options = json.loads(item.options) if item.options else None
+    except Exception:
+        options = None
+
+    if not _validate_config_value(data.value, item.value_type, item.min_value, item.max_value, options):
+        raise HTTPException(status_code=400, detail="配置值无效或超出范围")
+
+    old_value = item.value
+
+    if old_value == data.value:
+        return _make_config_item_response(item)
+
+    item.value = data.value
+    item.last_modified_by = current_user.id
+    item.last_modified_by_username = current_user.username
+    item.updated_at = datetime.utcnow()
+
+    change_log = ConfigChangeLog(
+        config_item_id=item.id,
+        config_key=item.config_key,
+        old_value=old_value,
+        new_value=data.value,
+        changed_by=current_user.id,
+        changed_by_username=current_user.username,
+        change_reason=data.change_reason,
+        created_at=datetime.utcnow(),
+    )
+    db.add(change_log)
+
+    db.commit()
+    db.refresh(item)
+
+    update_config_cache(item)
+
+    logger.info(f"Config updated by {current_user.username}: {item.config_key} = {data.value} (was {old_value})")
+
+    return _make_config_item_response(item)
+
+
+@app.get("/api/configs/{config_id}/change-logs")
+async def get_config_change_logs(
+    config_id: int,
+    limit: int = 5,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取配置项的变更记录"""
+    item = db.query(ConfigItem).filter(ConfigItem.id == config_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="配置项不存在")
+
+    logs = db.query(ConfigChangeLog).filter(
+        ConfigChangeLog.config_item_id == config_id
+    ).order_by(ConfigChangeLog.created_at.desc()).limit(limit).all()
+
+    return {
+        "items": [_make_config_change_log_response(log) for log in logs],
+        "total": len(logs),
+    }
+
+
+@app.post("/api/configs/refresh-cache")
+async def refresh_config_cache(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"])),
+):
+    """手动刷新配置缓存"""
+    load_configs_to_cache()
+    return {"message": "配置缓存已刷新", "config_count": len(_config_cache)}
 
 
 if __name__ == "__main__":

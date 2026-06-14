@@ -253,6 +253,16 @@ export const relocationLogApi = {
     list: (params = {}) => api.get('/api/relocation-logs', { params }),
 };
 
+export const configApi = {
+    list: (params = {}) => api.get('/api/configs', { params }),
+    get: (id) => api.get(`/api/configs/${id}`),
+    update: (id, data) => api.put(`/api/configs/${id}`, data),
+    getChangeLogs: (id, limit = 5) => api.get(`/api/configs/${id}/change-logs`, { params: { limit } }),
+    getCategories: () => api.get('/api/configs/meta/categories'),
+    getScopes: () => api.get('/api/configs/meta/scopes'),
+    refreshCache: () => api.post('/api/configs/refresh-cache'),
+};
+
 const WS_BASE_URL = API_BASE_URL.replace('http://', 'ws://').replace('https://', 'wss://');
 
 export const buildNotificationWsUrl = (token) => {

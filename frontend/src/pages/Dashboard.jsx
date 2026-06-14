@@ -29,6 +29,7 @@ import {
     Key,
     Map,
     Flower2,
+    Sliders,
 } from 'lucide-react';
 import CommentDrawer from '../components/CommentDrawer';
 import NotificationDrawer from '../components/NotificationDrawer';
@@ -296,6 +297,21 @@ function Dashboard() {
                                     <p className="text-xs text-slate-500 mt-1">追花夺蜜 · 花期规划</p>
                                 </div>
                                 <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-emerald-400 transition-colors" />
+                            </Link>
+                        )}
+                        {canRead && (
+                            <Link
+                                to="/farm-config"
+                                className="group flex flex-col items-center gap-3 p-5 rounded-2xl bg-slate-800/50 hover:bg-sky-500/10 border border-slate-700 hover:border-sky-500/30 transition-all"
+                            >
+                                <div className="p-3 bg-sky-500/20 rounded-xl group-hover:scale-110 transition-transform">
+                                    <Sliders className="w-6 h-6 text-sky-400" />
+                                </div>
+                                <div className="text-center">
+                                    <p className="font-medium text-white">蜂场配置</p>
+                                    <p className="text-xs text-slate-500 mt-1">动态配置 · 即时生效</p>
+                                </div>
+                                <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-sky-400 transition-colors" />
                             </Link>
                         )}
                     </div>

@@ -1,0 +1,118 @@
+# ============================================================
+# pre-commit 钩子链配置
+# 安装步骤：
+#   1. pip install pre-commit
+#   2. pre-commit install                # 安装到 git 钩子
+#   3. pre-commit install --hook-type commit-msg  # 可选
+#   4. pre-commit run --all-files        # 首次全量扫描
+# ============================================================
+
+repos:
+  # ---------- 基础文本检查 ----------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        name: 去除行尾空格
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+        name: 确保文件以换行结尾
+      - id: check-yaml
+        name: YAML 语法检查
+      - id: check-json
+        name: JSON 语法检查
+      - id: check-toml
+        name: TOML 语法检查
+      - id: check-xml
+        name: XML 语法检查
+      - id: check-merge-conflict
+        name: 检测遗留合并冲突标记
+      - id: check-added-large-files
+        name: 检测大文件 (>500KB)
+        args: ["--maxkb=500"]
+      - id: detect-private-key
+        name: 检测私钥泄漏
+      - id: mixed-line-ending
+        name: 统一换行符 (LF)
+        args: [--fix=lf]
+      - id: no-commit-to-branch
+        name: 禁止直接提交到 main / master
+        args: [--branch, main, --branch, master]
+      - id: pretty-format-json
+        name: JSON 格式化
+        args: [--autofix, --indent, "2", --no-sort-keys]
+
+  # ---------- Python 代码质量 ----------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.8
+    hooks:
+      - id: ruff
+        name: ruff lint (Python)
+        args: [--fix]
+        files: ^backend/
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format (Python)
+        files: ^backend/
+        types_or: [python, pyi]
+
+  - repo: https://github.com/psf/black-pre-commit-mirror
+    rev: 24.4.2
+    hooks:
+      - id: black
+        name: black 格式化 (Python)
+        language_version: python3.11
+        files: ^backend/
+
+  # ---------- JavaScript / Frontend 代码质量 ----------
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: v9.4.0
+    hooks:
+      - id: eslint
+        name: eslint lint (JS/JSX)
+        files: ^frontend/src/.*\.[jt]sx?$
+        types: [file]
+        args: [--fix, --max-warnings=0]
+        additional_dependencies:
+          - eslint@^9.4.0
+          - eslint-plugin-react@^7.34.1
+          - eslint-plugin-react-hooks@^4.6.2
+          - globals@^15.1.0
+          - "@eslint/js@^9.4.0"
+
+  - repo: https://github.com/rbubley/mirrors-prettier
+    rev: v3.3.0
+    hooks:
+      - id: prettier
+        name: prettier 格式化 (JS/JSX/CSS/MD/JSON)
+        files: ^frontend/
+        types_or: [javascript, jsx, ts, tsx, css, markdown, json, yaml]
+        args: [--write]
+
+  # ---------- Dockerfile Lint ----------
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.12.1-beta
+    hooks:
+      - id: hadolint
+        name: hadolint (Dockerfile)
+        args:
+          - --ignore=DL3008
+          - --ignore=DL3013
+          - --ignore=DL3016
+          - --ignore=SC2086
+
+  # ---------- 可选：安全扫描 ----------
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.9
+    hooks:
+      - id: bandit
+        name: bandit Python 安全扫描
+        args: ["-c", "pyproject.toml", "-r", "backend"]
+        additional_dependencies: [".[toml]"]
+        pass_filenames: false
+
+ci:
+  autofix_commit_msg: |
+    ci(pre-commit): auto fixes from pre-commit hooks
+  autoupdate_commit_msg: "ci(pre-commit): bump hook versions"
+  autoupdate_schedule: monthly

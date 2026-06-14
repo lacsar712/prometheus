@@ -1,0 +1,59 @@
+version: '3.8'
+
+# ============================================================
+# docker-compose.override.yml - 本地开发专用（自动叠加）
+#
+# 当存在本文件时，`docker compose up` 会自动合并本文件。
+# 特性：
+#   - 源码挂载 volume（本地代码变更即时生效，无需 rebuild）
+#   - uvicorn --reload 热重载
+#   - debugpy 调试端口 5678（VS Code / PyCharm 可 Attach）
+#   - node_modules 匿名卷（避免覆盖容器内的 node_modules）
+#   - 不使用 restart 策略（便于调试崩溃问题）
+#   - 生产环境请使用 docker-compose.prod.yml 叠加
+# ============================================================
+
+services:
+  db:
+    restart: "no"
+
+  backend:
+    restart: "no"
+    command: >
+      sh -c "
+        pip install debugpy -q &&
+        python -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m
+        uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+      "
+    volumes:
+      - ./backend:/app:cached
+      - backend_pycache:/app/__pycache__
+    ports:
+      - "${BACKEND_DEBUG_PORT:-5678}:5678"
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      DEBUG: "true"
+
+  frontend:
+    restart: "no"
+    build:
+      target: builder
+    command: npm run dev -- --host 0.0.0.0 --port 5173
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+      - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://localhost:8000}
+    volumes:
+      - ./frontend:/app:cached
+      - /app/node_modules
+    ports:
+      - "${FRONTEND_PORT:-3000}:5173"
+
+  minio:
+    restart: "no"
+
+  prometheus:
+    restart: "no"
+
+volumes:
+  backend_pycache:

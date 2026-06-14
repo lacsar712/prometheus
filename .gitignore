@@ -1,14 +1,70 @@
+# ============= Python =============
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+*.egg-info/
+
+# ============= Virtual Environments =============
 .venv
 venv/
 ENV/
+env/
+
+# ============= Environment Files =============
 .env
+.env.local
+.env.*.local
+!.env.example
+
+# ============= IDE / Editors =============
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
+
+# ============= OS =============
 .DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ============= Node / Frontend =============
 node_modules/
 dist/
 build/
+coverage/
+.vite/
+*.local
+
+# ============= Docker / Build Artifacts =============
+docker-compose.override.yml.local
+*.log
+
+# ============= Backups =============
+backups/
+*.dump
+*.sql
+*.bak
+
+# ============= Testing =============
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# ============= Lint / Cache =============
+.ruff_cache/
+.mypy_cache/
+.eslintcache
+.cache/
+.pre-commit-cache/
+
+# ============= Other =============
 trae/
+result*.md
+TEMP*.md
+

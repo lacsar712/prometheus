@@ -45,10 +45,61 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # JWT 配置
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production-please-2024")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-REFRESH_TOKEN_EXPIRE_DAYS = 7
+SECRET_KEY = os.getenv("JWT_SECRET", os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production-please-2024"))
+ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+
+# ========== 告警阈值配置（可通过 HIVE_ALERT_THRESHOLDS JSON 或单独环境变量覆盖）==========
+def _parse_env_float(name: str, default: float) -> float:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except ValueError:
+        return default
+
+def _parse_env_int(name: str, default: int) -> int:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
+
+def _parse_env_bool(name: str, default: bool) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.lower() in ("1", "true", "yes", "on")
+
+HIVE_ALERT_THRESHOLDS_RAW = os.getenv("HIVE_ALERT_THRESHOLDS")
+HIVE_ALERT_THRESHOLDS = {}
+if HIVE_ALERT_THRESHOLDS_RAW:
+    try:
+        HIVE_ALERT_THRESHOLDS = json.loads(HIVE_ALERT_THRESHOLDS_RAW)
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("Failed to parse HIVE_ALERT_THRESHOLDS JSON, using individual env vars or defaults")
+
+DEFAULT_HIGH_TEMP_THRESHOLD = HIVE_ALERT_THRESHOLDS.get("high_temp",
+    _parse_env_float("HIVE_HIGH_TEMP_THRESHOLD", 38.0))
+DEFAULT_LOW_TEMP_THRESHOLD = HIVE_ALERT_THRESHOLDS.get("low_temp",
+    _parse_env_float("HIVE_LOW_TEMP_THRESHOLD", 10.0))
+DEFAULT_WEIGHT_LOSS_THRESHOLD = HIVE_ALERT_THRESHOLDS.get("weight_loss",
+    _parse_env_float("HIVE_WEIGHT_LOSS_THRESHOLD", 5.0))
+DEFAULT_INSPECTION_CYCLE_DAYS = HIVE_ALERT_THRESHOLDS.get("inspection_cycle_days",
+    _parse_env_int("HIVE_INSPECTION_CYCLE_DAYS", 7))
+DEFAULT_SENSOR_OFFLINE_DURATION = HIVE_ALERT_THRESHOLDS.get("sensor_offline_minutes",
+    _parse_env_int("HIVE_SENSOR_OFFLINE_MINUTES", 30))
+DEFAULT_SENSOR_RATE_LIMIT = HIVE_ALERT_THRESHOLDS.get("sensor_rate_limit",
+    _parse_env_int("HIVE_SENSOR_RATE_LIMIT", 60))
+DEFAULT_EMAIL_ALERT_ENABLED = HIVE_ALERT_THRESHOLDS.get("email_alert_enabled",
+    _parse_env_bool("HIVE_EMAIL_ALERT_ENABLED", True))
+DEFAULT_ALERT_SEVERITY_LEVEL = HIVE_ALERT_THRESHOLDS.get("alert_severity_level",
+    os.getenv("HIVE_ALERT_SEVERITY_LEVEL", "WARNING"))
+DEFAULT_LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 # 密码加密上下文
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -2370,12 +2421,12 @@ def update_config_cache(config_item: ConfigItem):
     _config_cache[key] = config_item
 
 
-# ========== 预置配置定义 ==========
+# ========== 预置配置定义（默认值可通过环境变量覆盖）==========
 PRESET_CONFIGS = [
     {
         "config_key": "high_temp_threshold",
         "name": "高温告警阈值",
-        "value": "38.0",
+        "value": str(DEFAULT_HIGH_TEMP_THRESHOLD),
         "value_type": ConfigValueType.NUMBER,
         "scope": ConfigScope.GLOBAL,
         "farm_id": None,
@@ -2389,7 +2440,7 @@ PRESET_CONFIGS = [
     {
         "config_key": "low_temp_threshold",
         "name": "低温告警阈值",
-        "value": "10.0",
+        "value": str(DEFAULT_LOW_TEMP_THRESHOLD),
         "value_type": ConfigValueType.NUMBER,
         "scope": ConfigScope.GLOBAL,
         "farm_id": None,
@@ -2403,7 +2454,7 @@ PRESET_CONFIGS = [
     {
         "config_key": "weight_loss_alert_threshold",
         "name": "失重告警阈值",
-        "value": "5.0",
+        "value": str(DEFAULT_WEIGHT_LOSS_THRESHOLD),
         "value_type": ConfigValueType.SLIDER,
         "scope": ConfigScope.GLOBAL,
         "farm_id": None,
@@ -2417,7 +2468,7 @@ PRESET_CONFIGS = [
     {
         "config_key": "inspection_cycle_days",
         "name": "巡检周期天数",
-        "value": "7",
+        "value": str(DEFAULT_INSPECTION_CYCLE_DAYS),
         "value_type": ConfigValueType.NUMBER,
         "scope": ConfigScope.GLOBAL,
         "farm_id": None,
@@ -2431,7 +2482,7 @@ PRESET_CONFIGS = [
     {
         "config_key": "sensor_offline_duration",
         "name": "传感器掉线判定时长",
-        "value": "30",
+        "value": str(DEFAULT_SENSOR_OFFLINE_DURATION),
         "value_type": ConfigValueType.SELECT,
         "scope": ConfigScope.GLOBAL,
         "farm_id": None,
@@ -2452,7 +2503,7 @@ PRESET_CONFIGS = [
     {
         "config_key": "email_alert_enabled",
         "name": "邮件告警开关",
-        "value": "true",
+        "value": "true" if DEFAULT_EMAIL_ALERT_ENABLED else "false",
         "value_type": ConfigValueType.BOOLEAN,
         "scope": ConfigScope.GLOBAL,
         "farm_id": None,
@@ -2480,7 +2531,7 @@ PRESET_CONFIGS = [
     {
         "config_key": "log_level",
         "name": "日志级别",
-        "value": "INFO",
+        "value": DEFAULT_LOG_LEVEL,
         "value_type": ConfigValueType.SELECT,
         "scope": ConfigScope.GLOBAL,
         "farm_id": None,
@@ -2499,7 +2550,7 @@ PRESET_CONFIGS = [
     {
         "config_key": "sensor_rate_limit",
         "name": "传感器数据限流阈值",
-        "value": "60",
+        "value": str(DEFAULT_SENSOR_RATE_LIMIT),
         "value_type": ConfigValueType.NUMBER,
         "scope": ConfigScope.GLOBAL,
         "farm_id": None,
@@ -2513,7 +2564,7 @@ PRESET_CONFIGS = [
     {
         "config_key": "alert_severity_level",
         "name": "告警严重程度阈值",
-        "value": "WARNING",
+        "value": DEFAULT_ALERT_SEVERITY_LEVEL,
         "value_type": ConfigValueType.SELECT,
         "scope": ConfigScope.GLOBAL,
         "farm_id": None,

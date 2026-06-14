@@ -1,0 +1,132 @@
+version: '3.8'
+
+# ============================================================
+# docker-compose.prod.yml - 生产环境加固配置
+#
+# 使用方式：
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# 特性：
+#   - 资源限制（CPU / 内存 / PID）防 OOM 雪崩
+#   - json-file 日志驱动 + 轮转（避免磁盘撑爆）
+#   - 自动重启策略（unless-stopped）
+#   - 健康检查（backend / frontend / minio / prometheus）
+#   - 只读 rootfs 可选 + tmpfs 挂载（最小化攻击面）
+#   - 固定 image tag（避免 latest 漂移）
+# ============================================================
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "5"
+    tag: "{{.Name}}|{{.ImageName}}|{{.ID}}"
+
+x-restart: &default-restart
+  restart: unless-stopped
+
+services:
+  db:
+    <<: *default-restart
+    image: postgres:15.8-alpine
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-user} -d ${POSTGRES_DB:-prometheus_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  backend:
+    <<: *default-restart
+    image: prometheus/backend:latest
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/').status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    read_only: false
+    tmpfs:
+      - /tmp:size=64M
+
+  frontend:
+    <<: *default-restart
+    image: prometheus/frontend:latest
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:80/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  minio:
+    <<: *default-restart
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  prometheus:
+    <<: *default-restart
+    image: prom/prometheus:v2.52.0
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.25"
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'

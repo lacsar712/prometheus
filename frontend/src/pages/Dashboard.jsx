@@ -27,6 +27,8 @@ import {
     CalendarClock,
     ShieldAlert,
     Key,
+    Map,
+    Flower2,
 } from 'lucide-react';
 import CommentDrawer from '../components/CommentDrawer';
 import NotificationDrawer from '../components/NotificationDrawer';
@@ -279,6 +281,21 @@ function Dashboard() {
                                     <p className="text-xs text-slate-500 mt-1">设备凭证 · SaaS 接入</p>
                                 </div>
                                 <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-indigo-400 transition-colors" />
+                            </Link>
+                        )}
+                        {canRead && (
+                            <Link
+                                to="/relocation-map"
+                                className="group flex flex-col items-center gap-3 p-5 rounded-2xl bg-slate-800/50 hover:bg-emerald-500/10 border border-slate-700 hover:border-emerald-500/30 transition-all"
+                            >
+                                <div className="p-3 bg-emerald-500/20 rounded-xl group-hover:scale-110 transition-transform">
+                                    <Map className="w-6 h-6 text-emerald-400" />
+                                </div>
+                                <div className="text-center">
+                                    <p className="font-medium text-white">转场地图</p>
+                                    <p className="text-xs text-slate-500 mt-1">追花夺蜜 · 花期规划</p>
+                                </div>
+                                <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-emerald-400 transition-colors" />
                             </Link>
                         )}
                     </div>

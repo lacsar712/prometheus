@@ -223,6 +223,36 @@ export const notificationApi = {
     dispatch: (data) => api.post('/api/internal/notifications/dispatch', data),
 };
 
+export const nectarCalendarApi = {
+    list: (params = {}) => api.get('/api/nectar-calendars', { params }),
+    get: (id) => api.get(`/api/nectar-calendars/${id}`),
+    create: (data) => api.post('/api/nectar-calendars', data),
+    update: (id, data) => api.put(`/api/nectar-calendars/${id}`, data),
+    remove: (id) => api.delete(`/api/nectar-calendars/${id}`),
+    getPlantTypes: () => api.get('/api/nectar-calendars/meta/plant-types'),
+};
+
+export const relocationApi = {
+    estimateDistance: (params) => api.get('/api/relocation/estimate-distance', { params }),
+};
+
+export const relocationPlanApi = {
+    list: (params = {}) => api.get('/api/relocation-plans', { params }),
+    get: (id) => api.get(`/api/relocation-plans/${id}`),
+    create: (data) => api.post('/api/relocation-plans', data),
+    update: (id, data) => api.put(`/api/relocation-plans/${id}`, data),
+    remove: (id) => api.delete(`/api/relocation-plans/${id}`),
+    start: (id) => api.post(`/api/relocation-plans/${id}/start`),
+    complete: (id) => api.post(`/api/relocation-plans/${id}/complete`),
+    cancel: (id) => api.post(`/api/relocation-plans/${id}/cancel`),
+    exportChecklist: (id) =>
+        api.get(`/api/relocation-plans/${id}/export-checklist`, { responseType: 'blob' }),
+};
+
+export const relocationLogApi = {
+    list: (params = {}) => api.get('/api/relocation-logs', { params }),
+};
+
 const WS_BASE_URL = API_BASE_URL.replace('http://', 'ws://').replace('https://', 'wss://');
 
 export const buildNotificationWsUrl = (token) => {

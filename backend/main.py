@@ -111,6 +111,57 @@ ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "bmp"}
 ALLOWED_VIDEO_EXTENSIONS = {"mp4", "mov", "avi", "webm", "mkv"}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
+# 蜜源植物类型
+class NectarPlantType(str, PyEnum):
+    RAPE = "rape"                   # 油菜
+    LOCUST = "locust"               # 洋槐
+    LINDEN = "linden"               # 椴树
+    VITEX = "vitex"                 # 荆条
+    JUJUBE = "jujube"               # 枣花
+    SUNFLOWER = "sunflower"         # 向日葵
+    BUCKWHEAT = "buckwheat"         # 荞麦
+    ECHIUM = "echium"               # 野香草
+    OTHER = "other"                 # 其他
+
+NECTAR_PLANT_NAMES = {
+    NectarPlantType.RAPE: "油菜",
+    NectarPlantType.LOCUST: "洋槐",
+    NectarPlantType.LINDEN: "椴树",
+    NectarPlantType.VITEX: "荆条",
+    NectarPlantType.JUJUBE: "枣花",
+    NectarPlantType.SUNFLOWER: "向日葵",
+    NectarPlantType.BUCKWHEAT: "荞麦",
+    NectarPlantType.ECHIUM: "野香草",
+    NectarPlantType.OTHER: "其他",
+}
+
+# 蜜源植物颜色映射（用于前端热力图）
+NECTAR_PLANT_COLORS = {
+    NectarPlantType.RAPE: "#FFD700",        # 金黄色
+    NectarPlantType.LOCUST: "#FFFFFF",      # 白色
+    NectarPlantType.LINDEN: "#E6E6FA",      # 淡紫色
+    NectarPlantType.VITEX: "#9370DB",       # 中紫色
+    NectarPlantType.JUJUBE: "#F0E68C",      # 卡其色
+    NectarPlantType.SUNFLOWER: "#FFA500",   # 橙色
+    NectarPlantType.BUCKWHEAT: "#8B4513",   #  saddle棕色
+    NectarPlantType.ECHIUM: "#4169E1",      # 皇家蓝
+    NectarPlantType.OTHER: "#808080",       # 灰色
+}
+
+# 转场计划状态
+class RelocationStatus(str, PyEnum):
+    PLANNED = "planned"             # 计划中
+    IN_TRANSIT = "in_transit"       # 运输中
+    COMPLETED = "completed"         # 已完成
+    CANCELLED = "cancelled"         # 已取消
+
+RELOCATION_STATUS_NAMES = {
+    RelocationStatus.PLANNED: "计划中",
+    RelocationStatus.IN_TRANSIT: "运输中",
+    RelocationStatus.COMPLETED: "已完成",
+    RelocationStatus.CANCELLED: "已取消",
+}
+
 # 群势等级
 class StrengthLevel(str, PyEnum):
     WEAK = "weak"           # 弱
@@ -476,6 +527,78 @@ class Notification(Base):
     user = relationship("User")
 
 
+# ========== 蜜源花期日历数据库模型 ==========
+class NectarCalendar(Base):
+    __tablename__ = "nectar_calendars"
+    id = Column(Integer, primary_key=True, index=True)
+    plant_type = Column(Enum(NectarPlantType), nullable=False, index=True)  # 蜜源植物类型
+    plant_name = Column(String(100), nullable=False)  # 植物名称（自定义）
+    location_name = Column(String(200), nullable=False)  # 地理位置名称
+    location_lat = Column(Float, nullable=False, index=True)  # 纬度
+    location_lng = Column(Float, nullable=False, index=True)  # 经度
+    bloom_start_date = Column(DateTime, nullable=False, index=True)  # 预计开花开始日期
+    bloom_end_date = Column(DateTime, nullable=False, index=True)  # 预计开花结束日期
+    max_hive_capacity = Column(Integer, nullable=False, default=100)  # 可承载蜂群数
+    nectar_quality = Column(String(20), nullable=True)  # 蜜质等级
+    notes = Column(Text, nullable=True)  # 备注
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)  # 创建人ID
+    created_by_username = Column(String(50), nullable=False)  # 创建人用户名
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    creator = relationship("User", foreign_keys=[created_by])
+
+
+# ========== 转场计划数据库模型 ==========
+class RelocationPlan(Base):
+    __tablename__ = "relocation_plans"
+    id = Column(Integer, primary_key=True, index=True)
+    plan_name = Column(String(200), nullable=False)  # 计划名称
+    source_apiary_id = Column(String(100), nullable=False)  # 出发蜂场ID
+    source_location_name = Column(String(200), nullable=False)  # 出发地名称
+    source_lat = Column(Float, nullable=False)  # 出发地纬度
+    source_lng = Column(Float, nullable=False)  # 出发地经度
+    destination_apiary_id = Column(String(100), nullable=False)  # 目的地蜂场ID
+    destination_location_name = Column(String(200), nullable=False)  # 目的地名称
+    destination_lat = Column(Float, nullable=False)  # 目的地纬度
+    destination_lng = Column(Float, nullable=False)  # 目的地经度
+    departure_date = Column(DateTime, nullable=False, index=True)  # 出发日期
+    estimated_arrival_date = Column(DateTime, nullable=True)  # 预计到达日期
+    transport_vehicle = Column(String(100), nullable=True)  # 运输车辆
+    distance_km = Column(Float, nullable=True)  # 直线距离（公里）
+    beekeepers = Column(Text, nullable=False, default="[]")  # 随行养蜂员列表（JSON数组）
+    hive_list = Column(Text, nullable=False, default="[]")  # 装车蜂箱清单（JSON数组，包含蜂箱ID、健康度、蜂王状态、巢框数、装车顺序等）
+    status = Column(Enum(RelocationStatus), nullable=False, default=RelocationStatus.PLANNED, index=True)  # 状态
+    notes = Column(Text, nullable=True)  # 备注
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)  # 创建人ID
+    created_by_username = Column(String(50), nullable=False)  # 创建人用户名
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)  # 完成时间
+
+    creator = relationship("User", foreign_keys=[created_by])
+
+
+# ========== 迁场日志数据库模型 ==========
+class RelocationLog(Base):
+    __tablename__ = "relocation_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    plan_id = Column(Integer, ForeignKey("relocation_plans.id"), nullable=False, index=True)  # 关联的转场计划ID
+    hive_id = Column(Integer, ForeignKey("beehives.id"), nullable=False, index=True)  # 蜂箱ID
+    hive_code = Column(String(50), nullable=False, index=True)  # 蜂箱编号
+    source_apiary_id = Column(String(100), nullable=False)  # 原蜂场ID
+    destination_apiary_id = Column(String(100), nullable=False)  # 新蜂场ID
+    operator_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # 操作人ID
+    operator_username = Column(String(50), nullable=False)  # 操作人用户名
+    context_data = Column(Text, nullable=False, default="{}")  # 迁场时上下文数据（JSON）
+    description = Column(String(500), nullable=True)  # 描述
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    plan = relationship("RelocationPlan")
+    beehive = relationship("Beehive")
+    operator = relationship("User", foreign_keys=[operator_id])
+
+
 # ========== 消息中心 Pydantic 模型 ==========
 class NotificationBase(BaseModel):
     category: MessageCategory
@@ -578,6 +701,193 @@ class UserResponse(BaseModel):
 
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
+
+
+# ========== 转场清单蜂箱项 Pydantic 模型 ==========
+class RelocationHiveItem(BaseModel):
+    hive_id: int
+    hive_code: str
+    health_level: StrengthLevel = StrengthLevel.MEDIUM  # 蜂群健康度
+    queen_status: str = "normal"  # 女王蜂状态 normal/weak/queenless
+    frame_count: int = 10  # 巢框数量
+    load_order: Optional[int] = None  # 装车顺序
+    is_checked: bool = False  # 是否已勾选检查
+    notes: Optional[str] = None
+
+
+# ========== 蜜源花期日历 Pydantic 模型 ==========
+class NectarCalendarBase(BaseModel):
+    plant_type: NectarPlantType
+    plant_name: str = Field(..., min_length=1, max_length=100)
+    location_name: str = Field(..., min_length=1, max_length=200)
+    location_lat: float
+    location_lng: float
+    bloom_start_date: datetime
+    bloom_end_date: datetime
+    max_hive_capacity: int = 100
+    nectar_quality: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class NectarCalendarCreate(NectarCalendarBase):
+    pass
+
+
+class NectarCalendarUpdate(BaseModel):
+    plant_type: Optional[NectarPlantType] = None
+    plant_name: Optional[str] = None
+    location_name: Optional[str] = None
+    location_lat: Optional[float] = None
+    location_lng: Optional[float] = None
+    bloom_start_date: Optional[datetime] = None
+    bloom_end_date: Optional[datetime] = None
+    max_hive_capacity: Optional[int] = None
+    nectar_quality: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class NectarCalendarResponse(BaseModel):
+    id: int
+    plant_type: NectarPlantType
+    plant_type_name: str
+    plant_name: str
+    location_name: str
+    location_lat: float
+    location_lng: float
+    bloom_start_date: datetime
+    bloom_end_date: datetime
+    max_hive_capacity: int
+    nectar_quality: Optional[str]
+    notes: Optional[str]
+    created_by: int
+    created_by_username: str
+    created_at: datetime
+    updated_at: datetime
+    color: str
+
+    class Config:
+        from_attributes = True
+
+
+class NectarCalendarListResponse(BaseModel):
+    items: List[NectarCalendarResponse]
+    total: int
+    page: int
+    size: int
+
+
+# ========== 转场计划 Pydantic 模型 ==========
+class RelocationPlanBase(BaseModel):
+    plan_name: str = Field(..., min_length=1, max_length=200)
+    source_apiary_id: str
+    source_location_name: str
+    source_lat: float
+    source_lng: float
+    destination_apiary_id: str
+    destination_location_name: str
+    destination_lat: float
+    destination_lng: float
+    departure_date: datetime
+    estimated_arrival_date: Optional[datetime] = None
+    transport_vehicle: Optional[str] = None
+    distance_km: Optional[float] = None
+    beekeepers: List[str] = []
+    hive_list: List[RelocationHiveItem] = []
+    notes: Optional[str] = None
+
+
+class RelocationPlanCreate(RelocationPlanBase):
+    pass
+
+
+class RelocationPlanUpdate(BaseModel):
+    plan_name: Optional[str] = None
+    source_apiary_id: Optional[str] = None
+    source_location_name: Optional[str] = None
+    source_lat: Optional[float] = None
+    source_lng: Optional[float] = None
+    destination_apiary_id: Optional[str] = None
+    destination_location_name: Optional[str] = None
+    destination_lat: Optional[float] = None
+    destination_lng: Optional[float] = None
+    departure_date: Optional[datetime] = None
+    estimated_arrival_date: Optional[datetime] = None
+    transport_vehicle: Optional[str] = None
+    distance_km: Optional[float] = None
+    beekeepers: Optional[List[str]] = None
+    hive_list: Optional[List[RelocationHiveItem]] = None
+    status: Optional[RelocationStatus] = None
+    notes: Optional[str] = None
+
+
+class RelocationPlanResponse(BaseModel):
+    id: int
+    plan_name: str
+    source_apiary_id: str
+    source_location_name: str
+    source_lat: float
+    source_lng: float
+    destination_apiary_id: str
+    destination_location_name: str
+    destination_lat: float
+    destination_lng: float
+    departure_date: datetime
+    estimated_arrival_date: Optional[datetime]
+    transport_vehicle: Optional[str]
+    distance_km: Optional[float]
+    beekeepers: List[str]
+    hive_list: List[Dict]
+    status: RelocationStatus
+    status_name: str
+    notes: Optional[str]
+    created_by: int
+    created_by_username: str
+    created_at: datetime
+    updated_at: datetime
+    completed_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class RelocationPlanListResponse(BaseModel):
+    items: List[RelocationPlanResponse]
+    total: int
+    page: int
+    size: int
+
+
+# ========== 距离估算响应模型 ==========
+class DistanceEstimateResponse(BaseModel):
+    distance_km: float
+    estimated_duration_hours: float
+    estimated_arrival_time: Optional[datetime] = None
+
+
+# ========== 迁场日志 Pydantic 模型 ==========
+class RelocationLogResponse(BaseModel):
+    id: int
+    plan_id: int
+    hive_id: int
+    hive_code: str
+    source_apiary_id: str
+    destination_apiary_id: str
+    operator_id: int
+    operator_username: str
+    context_data: Dict
+    description: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class RelocationLogListResponse(BaseModel):
+    items: List[RelocationLogResponse]
+    total: int
+    page: int
+    size: int
+
 
 # ========== 蜂箱相关 Pydantic 模型 ==========
 class BeehiveBase(BaseModel):
@@ -4135,6 +4445,685 @@ async def websocket_notifications(websocket: WebSocket, token: Optional[str] = N
         ws_manager.disconnect(websocket, user_id)
     except Exception:
         ws_manager.disconnect(websocket, user_id)
+
+
+# ============ 工具函数 ============
+
+def haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """
+    使用Haversine公式计算两点之间的直线距离（公里）
+    """
+    import math
+    R = 6371.0  # 地球半径（公里）
+
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+    delta_lat = math.radians(lat2 - lat1)
+    delta_lng = math.radians(lng2 - lng1)
+
+    a = math.sin(delta_lat / 2) ** 2 + \
+        math.cos(lat1_rad) * math.cos(lat2_rad) * \
+        math.sin(delta_lng / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    return R * c
+
+
+def _get_nectar_calendar_response(item: NectarCalendar) -> NectarCalendarResponse:
+    return NectarCalendarResponse(
+        id=item.id,
+        plant_type=item.plant_type,
+        plant_type_name=NECTAR_PLANT_NAMES.get(item.plant_type, item.plant_type.value),
+        plant_name=item.plant_name,
+        location_name=item.location_name,
+        location_lat=item.location_lat,
+        location_lng=item.location_lng,
+        bloom_start_date=item.bloom_start_date,
+        bloom_end_date=item.bloom_end_date,
+        max_hive_capacity=item.max_hive_capacity,
+        nectar_quality=item.nectar_quality,
+        notes=item.notes,
+        created_by=item.created_by,
+        created_by_username=item.created_by_username,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+        color=NECTAR_PLANT_COLORS.get(item.plant_type, "#808080"),
+    )
+
+
+def _get_relocation_plan_response(plan: RelocationPlan) -> RelocationPlanResponse:
+    try:
+        beekeepers = json.loads(plan.beekeepers) if plan.beekeepers else []
+    except Exception:
+        beekeepers = []
+    try:
+        hive_list = json.loads(plan.hive_list) if plan.hive_list else []
+    except Exception:
+        hive_list = []
+
+    return RelocationPlanResponse(
+        id=plan.id,
+        plan_name=plan.plan_name,
+        source_apiary_id=plan.source_apiary_id,
+        source_location_name=plan.source_location_name,
+        source_lat=plan.source_lat,
+        source_lng=plan.source_lng,
+        destination_apiary_id=plan.destination_apiary_id,
+        destination_location_name=plan.destination_location_name,
+        destination_lat=plan.destination_lat,
+        destination_lng=plan.destination_lng,
+        departure_date=plan.departure_date,
+        estimated_arrival_date=plan.estimated_arrival_date,
+        transport_vehicle=plan.transport_vehicle,
+        distance_km=plan.distance_km,
+        beekeepers=beekeepers,
+        hive_list=hive_list,
+        status=plan.status,
+        status_name=RELOCATION_STATUS_NAMES.get(plan.status, plan.status.value),
+        notes=plan.notes,
+        created_by=plan.created_by,
+        created_by_username=plan.created_by_username,
+        created_at=plan.created_at,
+        updated_at=plan.updated_at,
+        completed_at=plan.completed_at,
+    )
+
+
+def _get_relocation_log_response(log: RelocationLog) -> RelocationLogResponse:
+    try:
+        context_data = json.loads(log.context_data) if log.context_data else {}
+    except Exception:
+        context_data = {}
+
+    return RelocationLogResponse(
+        id=log.id,
+        plan_id=log.plan_id,
+        hive_id=log.hive_id,
+        hive_code=log.hive_code,
+        source_apiary_id=log.source_apiary_id,
+        destination_apiary_id=log.destination_apiary_id,
+        operator_id=log.operator_id,
+        operator_username=log.operator_username,
+        context_data=context_data,
+        description=log.description,
+        created_at=log.created_at,
+    )
+
+
+# ============ 蜜源花期日历接口 ============
+
+@app.get("/api/nectar-calendars", response_model=NectarCalendarListResponse)
+async def list_nectar_calendars(
+    page: int = 1,
+    size: int = 20,
+    plant_type: Optional[NectarPlantType] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    min_lat: Optional[float] = None,
+    max_lat: Optional[float] = None,
+    min_lng: Optional[float] = None,
+    max_lng: Optional[float] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取蜜源花期日历列表，支持按时间窗口和地图视野范围检索"""
+    query = db.query(NectarCalendar)
+
+    if plant_type:
+        query = query.filter(NectarCalendar.plant_type == plant_type)
+
+    if start_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date)
+            query = query.filter(NectarCalendar.bloom_end_date >= start_dt)
+        except Exception:
+            pass
+
+    if end_date:
+        try:
+            end_dt = datetime.fromisoformat(end_date)
+            query = query.filter(NectarCalendar.bloom_start_date <= end_dt)
+        except Exception:
+            pass
+
+    if min_lat is not None:
+        query = query.filter(NectarCalendar.location_lat >= min_lat)
+    if max_lat is not None:
+        query = query.filter(NectarCalendar.location_lat <= max_lat)
+    if min_lng is not None:
+        query = query.filter(NectarCalendar.location_lng >= min_lng)
+    if max_lng is not None:
+        query = query.filter(NectarCalendar.location_lng <= max_lng)
+
+    total = query.count()
+    query = query.order_by(NectarCalendar.bloom_start_date.asc())
+    offset = (page - 1) * size
+    items = query.offset(offset).limit(size).all()
+
+    return {
+        "items": [_get_nectar_calendar_response(item) for item in items],
+        "total": total,
+        "page": page,
+        "size": size,
+    }
+
+
+@app.get("/api/nectar-calendars/{calendar_id}", response_model=NectarCalendarResponse)
+async def get_nectar_calendar(
+    calendar_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取单个蜜源花期日历详情"""
+    item = db.query(NectarCalendar).filter(NectarCalendar.id == calendar_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="花期日历不存在")
+    return _get_nectar_calendar_response(item)
+
+
+@app.post("/api/nectar-calendars", response_model=NectarCalendarResponse, status_code=status.HTTP_201_CREATED)
+async def create_nectar_calendar(
+    data: NectarCalendarCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["create"])),
+):
+    """创建蜜源花期日历"""
+    if data.bloom_start_date >= data.bloom_end_date:
+        raise HTTPException(status_code=400, detail="开花开始日期必须早于结束日期")
+
+    item = NectarCalendar(
+        plant_type=data.plant_type,
+        plant_name=data.plant_name,
+        location_name=data.location_name,
+        location_lat=data.location_lat,
+        location_lng=data.location_lng,
+        bloom_start_date=data.bloom_start_date,
+        bloom_end_date=data.bloom_end_date,
+        max_hive_capacity=data.max_hive_capacity,
+        nectar_quality=data.nectar_quality,
+        notes=data.notes,
+        created_by=current_user.id,
+        created_by_username=current_user.username,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+
+    logger.info(f"Nectar calendar created by {current_user.username}: {item.plant_name}")
+    return _get_nectar_calendar_response(item)
+
+
+@app.put("/api/nectar-calendars/{calendar_id}", response_model=NectarCalendarResponse)
+async def update_nectar_calendar(
+    calendar_id: int,
+    data: NectarCalendarUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"])),
+):
+    """更新蜜源花期日历"""
+    item = db.query(NectarCalendar).filter(NectarCalendar.id == calendar_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="花期日历不存在")
+
+    update_dict = data.model_dump(exclude_unset=True)
+    for key, value in update_dict.items():
+        setattr(item, key, value)
+    item.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(item)
+
+    logger.info(f"Nectar calendar updated by {current_user.username}: {item.plant_name}")
+    return _get_nectar_calendar_response(item)
+
+
+@app.delete("/api/nectar-calendars/{calendar_id}")
+async def delete_nectar_calendar(
+    calendar_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["delete"])),
+):
+    """删除蜜源花期日历"""
+    item = db.query(NectarCalendar).filter(NectarCalendar.id == calendar_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="花期日历不存在")
+
+    db.delete(item)
+    db.commit()
+    logger.info(f"Nectar calendar deleted by {current_user.username}: {item.plant_name}")
+    return {"message": "花期日历已删除"}
+
+
+@app.get("/api/nectar-calendars/meta/plant-types")
+async def get_nectar_plant_types(
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取蜜源植物类型列表"""
+    types_list = []
+    for plant_type in NectarPlantType:
+        types_list.append({
+            "value": plant_type.value,
+            "name": NECTAR_PLANT_NAMES.get(plant_type, plant_type.value),
+            "color": NECTAR_PLANT_COLORS.get(plant_type, "#808080"),
+        })
+    return {"plant_types": types_list}
+
+
+# ============ 距离估算接口 ============
+
+@app.get("/api/relocation/estimate-distance", response_model=DistanceEstimateResponse)
+async def estimate_distance(
+    source_lat: float,
+    source_lng: float,
+    destination_lat: float,
+    destination_lng: float,
+    departure_time: Optional[str] = None,
+    average_speed_kmh: float = 60.0,
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """估算两点之间的直线距离和预计到达时间"""
+    distance_km = haversine_distance(source_lat, source_lng, destination_lat, destination_lng)
+    estimated_duration_hours = distance_km / average_speed_kmh if average_speed_kmh > 0 else 0
+
+    estimated_arrival_time = None
+    if departure_time:
+        try:
+            departure_dt = datetime.fromisoformat(departure_time)
+            estimated_arrival_time = departure_dt + timedelta(hours=estimated_duration_hours)
+        except Exception:
+            pass
+
+    return {
+        "distance_km": round(distance_km, 2),
+        "estimated_duration_hours": round(estimated_duration_hours, 2),
+        "estimated_arrival_time": estimated_arrival_time,
+    }
+
+
+# ============ 转场计划接口 ============
+
+@app.get("/api/relocation-plans", response_model=RelocationPlanListResponse)
+async def list_relocation_plans(
+    page: int = 1,
+    size: int = 20,
+    status: Optional[RelocationStatus] = None,
+    source_apiary_id: Optional[str] = None,
+    destination_apiary_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取转场计划列表"""
+    query = db.query(RelocationPlan)
+
+    if status:
+        query = query.filter(RelocationPlan.status == status)
+    if source_apiary_id:
+        query = query.filter(RelocationPlan.source_apiary_id == source_apiary_id)
+    if destination_apiary_id:
+        query = query.filter(RelocationPlan.destination_apiary_id == destination_apiary_id)
+
+    total = query.count()
+    query = query.order_by(RelocationPlan.departure_date.desc())
+    offset = (page - 1) * size
+    plans = query.offset(offset).limit(size).all()
+
+    return {
+        "items": [_get_relocation_plan_response(plan) for plan in plans],
+        "total": total,
+        "page": page,
+        "size": size,
+    }
+
+
+@app.get("/api/relocation-plans/{plan_id}", response_model=RelocationPlanResponse)
+async def get_relocation_plan(
+    plan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取单个转场计划详情"""
+    plan = db.query(RelocationPlan).filter(RelocationPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="转场计划不存在")
+    return _get_relocation_plan_response(plan)
+
+
+@app.post("/api/relocation-plans", response_model=RelocationPlanResponse, status_code=status.HTTP_201_CREATED)
+async def create_relocation_plan(
+    data: RelocationPlanCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["create"])),
+):
+    """创建转场计划"""
+    if data.distance_km is None:
+        distance_km = haversine_distance(
+            data.source_lat, data.source_lng,
+            data.destination_lat, data.destination_lng
+        )
+    else:
+        distance_km = data.distance_km
+
+    if data.estimated_arrival_date is None and data.departure_date:
+        avg_speed = 60.0
+        duration_hours = distance_km / avg_speed if avg_speed > 0 else 0
+        estimated_arrival = data.departure_date + timedelta(hours=duration_hours)
+    else:
+        estimated_arrival = data.estimated_arrival_date
+
+    beekeepers_json = json.dumps(data.beekeepers, ensure_ascii=False)
+    hive_list_json = json.dumps(
+        [h.model_dump() for h in data.hive_list],
+        ensure_ascii=False
+    )
+
+    plan = RelocationPlan(
+        plan_name=data.plan_name,
+        source_apiary_id=data.source_apiary_id,
+        source_location_name=data.source_location_name,
+        source_lat=data.source_lat,
+        source_lng=data.source_lng,
+        destination_apiary_id=data.destination_apiary_id,
+        destination_location_name=data.destination_location_name,
+        destination_lat=data.destination_lat,
+        destination_lng=data.destination_lng,
+        departure_date=data.departure_date,
+        estimated_arrival_date=estimated_arrival,
+        transport_vehicle=data.transport_vehicle,
+        distance_km=round(distance_km, 2),
+        beekeepers=beekeepers_json,
+        hive_list=hive_list_json,
+        status=RelocationStatus.PLANNED,
+        notes=data.notes,
+        created_by=current_user.id,
+        created_by_username=current_user.username,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(plan)
+    db.commit()
+    db.refresh(plan)
+
+    logger.info(f"Relocation plan created by {current_user.username}: {plan.plan_name}")
+    return _get_relocation_plan_response(plan)
+
+
+@app.put("/api/relocation-plans/{plan_id}", response_model=RelocationPlanResponse)
+async def update_relocation_plan(
+    plan_id: int,
+    data: RelocationPlanUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"])),
+):
+    """更新转场计划"""
+    plan = db.query(RelocationPlan).filter(RelocationPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="转场计划不存在")
+
+    if plan.status == RelocationStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail="已完成的转场计划不可修改")
+
+    update_dict = data.model_dump(exclude_unset=True)
+
+    if "beekeepers" in update_dict:
+        update_dict["beekeepers"] = json.dumps(update_dict["beekeepers"], ensure_ascii=False)
+    if "hive_list" in update_dict:
+        update_dict["hive_list"] = json.dumps(
+            [h.model_dump() if hasattr(h, 'model_dump') else h for h in update_dict["hive_list"]],
+            ensure_ascii=False
+        )
+
+    for key, value in update_dict.items():
+        setattr(plan, key, value)
+
+    if "source_lat" in update_dict or "source_lng" in update_dict or \
+       "destination_lat" in update_dict or "destination_lng" in update_dict:
+        plan.distance_km = round(haversine_distance(
+            plan.source_lat, plan.source_lng,
+            plan.destination_lat, plan.destination_lng
+        ), 2)
+
+    plan.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(plan)
+
+    logger.info(f"Relocation plan updated by {current_user.username}: {plan.plan_name}")
+    return _get_relocation_plan_response(plan)
+
+
+@app.delete("/api/relocation-plans/{plan_id}")
+async def delete_relocation_plan(
+    plan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["delete"])),
+):
+    """删除转场计划"""
+    plan = db.query(RelocationPlan).filter(RelocationPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="转场计划不存在")
+
+    if plan.status == RelocationStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail="已完成的转场计划不可删除")
+
+    db.query(RelocationLog).filter(RelocationLog.plan_id == plan_id).delete()
+    db.delete(plan)
+    db.commit()
+
+    logger.info(f"Relocation plan deleted by {current_user.username}: {plan.plan_name}")
+    return {"message": "转场计划已删除"}
+
+
+@app.post("/api/relocation-plans/{plan_id}/start", response_model=RelocationPlanResponse)
+async def start_relocation(
+    plan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"])),
+):
+    """开始转场（状态变为运输中）"""
+    plan = db.query(RelocationPlan).filter(RelocationPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="转场计划不存在")
+
+    if plan.status != RelocationStatus.PLANNED:
+        raise HTTPException(status_code=400, detail="只有计划中的转场可以开始")
+
+    plan.status = RelocationStatus.IN_TRANSIT
+    plan.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(plan)
+
+    logger.info(f"Relocation started by {current_user.username}: {plan.plan_name}")
+    return _get_relocation_plan_response(plan)
+
+
+@app.post("/api/relocation-plans/{plan_id}/complete", response_model=RelocationPlanResponse)
+async def complete_relocation(
+    plan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"])),
+):
+    """完成转场：批量更新蜂箱所属蜂场并写入迁场日志"""
+    plan = db.query(RelocationPlan).filter(RelocationPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="转场计划不存在")
+
+    if plan.status != RelocationStatus.IN_TRANSIT and plan.status != RelocationStatus.PLANNED:
+        raise HTTPException(status_code=400, detail="只有计划中或运输中的转场可以完成")
+
+    try:
+        hive_list = json.loads(plan.hive_list) if plan.hive_list else []
+    except Exception:
+        hive_list = []
+
+    if not hive_list:
+        raise HTTPException(status_code=400, detail="转场计划没有装车蜂箱清单")
+
+    updated_count = 0
+    for hive_item in hive_list:
+        hive_id = hive_item.get("hive_id")
+        if not hive_id:
+            continue
+
+        beehive = db.query(Beehive).filter(Beehive.id == hive_id).first()
+        if not beehive:
+            continue
+
+        old_apiary_id = beehive.apiary_id
+        beehive.apiary_id = plan.destination_apiary_id
+        beehive.location_lat = plan.destination_lat
+        beehive.location_lng = plan.destination_lng
+        beehive.last_inspected_at = datetime.utcnow()
+
+        context_data = json.dumps({
+            "plan_id": plan_id,
+            "plan_name": plan.plan_name,
+            "old_apiary_id": old_apiary_id,
+            "new_apiary_id": plan.destination_apiary_id,
+            "source_location": plan.source_location_name,
+            "destination_location": plan.destination_location_name,
+            "health_level": hive_item.get("health_level", "medium"),
+            "queen_status": hive_item.get("queen_status", "normal"),
+            "frame_count": hive_item.get("frame_count"),
+            "load_order": hive_item.get("load_order"),
+        }, ensure_ascii=False)
+
+        op_log = BeehiveOperationLog(
+            hive_id=beehive.id,
+            hive_code=beehive.hive_code,
+            operation_type=HiveOperationType.RELOCATE,
+            operator_id=current_user.id,
+            operator_username=current_user.username,
+            context_data=context_data,
+            description=f"转场: 从 {plan.source_location_name} 到 {plan.destination_location_name}",
+            created_at=datetime.utcnow(),
+        )
+        db.add(op_log)
+
+        relocation_log = RelocationLog(
+            plan_id=plan_id,
+            hive_id=beehive.id,
+            hive_code=beehive.hive_code,
+            source_apiary_id=plan.source_apiary_id,
+            destination_apiary_id=plan.destination_apiary_id,
+            operator_id=current_user.id,
+            operator_username=current_user.username,
+            context_data=context_data,
+            description=f"转场完成: {plan.plan_name}",
+            created_at=datetime.utcnow(),
+        )
+        db.add(relocation_log)
+
+        updated_count += 1
+
+    plan.status = RelocationStatus.COMPLETED
+    plan.completed_at = datetime.utcnow()
+    plan.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(plan)
+
+    logger.info(f"Relocation completed by {current_user.username}: {plan.plan_name}, updated {updated_count} hives")
+    return _get_relocation_plan_response(plan)
+
+
+@app.post("/api/relocation-plans/{plan_id}/cancel", response_model=RelocationPlanResponse)
+async def cancel_relocation(
+    plan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["update"])),
+):
+    """取消转场计划"""
+    plan = db.query(RelocationPlan).filter(RelocationPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="转场计划不存在")
+
+    if plan.status == RelocationStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail="已完成的转场计划不可取消")
+
+    plan.status = RelocationStatus.CANCELLED
+    plan.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(plan)
+
+    logger.info(f"Relocation cancelled by {current_user.username}: {plan.plan_name}")
+    return _get_relocation_plan_response(plan)
+
+
+@app.get("/api/relocation-plans/{plan_id}/export-checklist")
+async def export_relocation_checklist(
+    plan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """导出现转场清单为CSV"""
+    plan = db.query(RelocationPlan).filter(RelocationPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="转场计划不存在")
+
+    try:
+        hive_list = json.loads(plan.hive_list) if plan.hive_list else []
+    except Exception:
+        hive_list = []
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "装车顺序", "蜂箱编号", "健康度", "蜂王状态", "巢框数量", "是否检查", "备注"
+    ])
+
+    hive_list_sorted = sorted(hive_list, key=lambda x: x.get("load_order") or 999)
+    for item in hive_list_sorted:
+        writer.writerow([
+            item.get("load_order", ""),
+            item.get("hive_code", ""),
+            item.get("health_level", ""),
+            item.get("queen_status", ""),
+            item.get("frame_count", ""),
+            "是" if item.get("is_checked") else "否",
+            item.get("notes", ""),
+        ])
+
+    output.seek(0)
+    filename = f"转场清单_{plan.plan_name}_{datetime.now().strftime('%Y%m%d')}.csv"
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{filename}"
+        }
+    )
+
+
+# ============ 迁场日志接口 ============
+
+@app.get("/api/relocation-logs", response_model=RelocationLogListResponse)
+async def list_relocation_logs(
+    page: int = 1,
+    size: int = 20,
+    plan_id: Optional[int] = None,
+    hive_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    """获取迁场日志列表"""
+    query = db.query(RelocationLog)
+
+    if plan_id:
+        query = query.filter(RelocationLog.plan_id == plan_id)
+    if hive_id:
+        query = query.filter(RelocationLog.hive_id == hive_id)
+
+    total = query.count()
+    query = query.order_by(RelocationLog.created_at.desc())
+    offset = (page - 1) * size
+    logs = query.offset(offset).limit(size).all()
+
+    return {
+        "items": [_get_relocation_log_response(log) for log in logs],
+        "total": total,
+        "page": page,
+        "size": size,
+    }
 
 
 if __name__ == "__main__":

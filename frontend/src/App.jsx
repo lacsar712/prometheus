@@ -10,6 +10,7 @@ import BeehiveOperationLog from './pages/BeehiveOperationLog';
 import InspectionPlan from './pages/InspectionPlan';
 import SensorFlowControl from './pages/SensorFlowControl';
 import ApiKeys from './pages/ApiKeys';
+import RelocationMap from './pages/RelocationMap';
 
 function App() {
     return (
@@ -64,6 +65,14 @@ function App() {
                             element={
                                 <ProtectedRoute>
                                     <ApiKeys />
+                                </ProtectedRoute>
+                            }
+                        />
+                        <Route
+                            path="/relocation-map"
+                            element={
+                                <ProtectedRoute>
+                                    <RelocationMap />
                                 </ProtectedRoute>
                             }
                         />

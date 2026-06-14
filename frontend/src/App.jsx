@@ -8,6 +8,7 @@ import BeehiveDetail from './pages/BeehiveDetail';
 import BeehiveOperationLog from './pages/BeehiveOperationLog';
 import InspectionPlan from './pages/InspectionPlan';
 import SensorFlowControl from './pages/SensorFlowControl';
+import ApiKeys from './pages/ApiKeys';
 
 function App() {
     return (
@@ -53,6 +54,14 @@ function App() {
                         element={
                             <ProtectedRoute>
                                 <SensorFlowControl />
+                            </ProtectedRoute>
+                        }
+                    />
+                    <Route
+                        path="/api-keys"
+                        element={
+                            <ProtectedRoute>
+                                <ApiKeys />
                             </ProtectedRoute>
                         }
                     />

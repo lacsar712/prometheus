@@ -16,7 +16,7 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum, T
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from pydantic import BaseModel, EmailStr, Field, validator
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import io
 import csv
 from passlib.context import CryptContext
@@ -269,6 +269,70 @@ class DeviceBan(Base):
     banned_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime, nullable=True)
     banned_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
+# ========== API Key 业务范围枚举 ==========
+class ApiKeyScope(str, PyEnum):
+    SENSOR_READ = "sensor_data:read"
+    SENSOR_WRITE = "sensor_data:write"
+    HIVES_READ = "hives:read"
+    HIVES_WRITE = "hives:write"
+    OPERATION_LOGS_READ = "operation_logs:read"
+    INSPECTION_PLANS_READ = "inspection_plans:read"
+    INSPECTION_PLANS_WRITE = "inspection_plans:write"
+    ALL = "all"
+
+SCOPE_NAMES = {
+    ApiKeyScope.SENSOR_READ: "读取传感器数据",
+    ApiKeyScope.SENSOR_WRITE: "写入传感器数据",
+    ApiKeyScope.HIVES_READ: "读取蜂箱信息",
+    ApiKeyScope.HIVES_WRITE: "写入蜂箱信息",
+    ApiKeyScope.OPERATION_LOGS_READ: "读取操作日志",
+    ApiKeyScope.INSPECTION_PLANS_READ: "读取巡检计划",
+    ApiKeyScope.INSPECTION_PLANS_WRITE: "写入巡检计划",
+    ApiKeyScope.ALL: "全部权限",
+}
+
+API_KEY_HEADER = "X-API-Key"
+API_KEY_PREFIX_LENGTH = 8
+API_KEY_SECRET_LENGTH = 32
+
+
+# ========== API Key 数据库模型 ==========
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200), nullable=False, index=True)
+    key_prefix = Column(String(20), nullable=False, index=True)
+    hashed_key = Column(String(255), nullable=False, unique=True)
+    scopes = Column(Text, nullable=False, default="[]")
+    expires_at = Column(DateTime, nullable=True, index=True)
+    last_used_at = Column(DateTime, nullable=True)
+    bound_device_id = Column(String(200), nullable=True, index=True)
+    issuer_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    is_revoked = Column(Boolean, nullable=False, default=False, index=True)
+    revoked_at = Column(DateTime, nullable=True)
+    revoked_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    issuer = relationship("User", foreign_keys=[issuer_id])
+    revoker = relationship("User", foreign_keys=[revoked_by])
+    call_logs = relationship("ApiKeyCallLog", back_populates="api_key", cascade="all, delete-orphan")
+
+
+class ApiKeyCallLog(Base):
+    __tablename__ = "api_key_call_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    api_key_id = Column(Integer, ForeignKey("api_keys.id"), nullable=False, index=True)
+    path = Column(String(500), nullable=False)
+    method = Column(String(20), nullable=False)
+    status_code = Column(Integer, nullable=False)
+    source_ip = Column(String(50), nullable=True)
+    device_id = Column(String(200), nullable=True, index=True)
+    user_agent = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    api_key = relationship("ApiKey", back_populates="call_logs")
 
 
 # ========== 巡检计划相关枚举 ==========
@@ -771,6 +835,83 @@ class SensorDataRequest(BaseModel):
     humidity: Optional[float] = None
     weight: Optional[float] = None
     extra: Optional[dict] = None
+
+
+# ========== API Key Pydantic 模型 ==========
+class ApiKeyCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200, description="凭证自定义名称")
+    scopes: List[str] = Field(..., description="可调用的业务范围列表")
+    expires_days: Optional[int] = Field(None, ge=1, description="过期天数，留空表示永不过期")
+    bound_device_id: Optional[str] = Field(None, max_length=200, description="可选绑定的设备ID")
+
+    @validator('scopes')
+    def validate_scopes(cls, v):
+        valid_scopes = {s.value for s in ApiKeyScope}
+        for scope in v:
+            if scope not in valid_scopes:
+                raise ValueError(f"无效的业务范围: {scope}")
+        if len(v) == 0:
+            raise ValueError("至少选择一个业务范围")
+        return v
+
+
+class ApiKeyCreatedResponse(BaseModel):
+    id: int
+    name: str
+    key_prefix: str
+    full_key: str
+    scopes: List[str]
+    scope_names: List[str]
+    expires_at: Optional[datetime]
+    bound_device_id: Optional[str]
+    created_at: datetime
+
+
+class ApiKeyResponse(BaseModel):
+    id: int
+    name: str
+    key_prefix: str
+    scopes: List[str]
+    scope_names: List[str]
+    expires_at: Optional[datetime]
+    last_used_at: Optional[datetime]
+    bound_device_id: Optional[str]
+    issuer_id: int
+    issuer_username: str
+    is_revoked: bool
+    revoked_at: Optional[datetime]
+    created_at: datetime
+
+
+class ApiKeyListResponse(BaseModel):
+    items: List[ApiKeyResponse]
+    total: int
+
+
+class ApiKeyCallLogResponse(BaseModel):
+    id: int
+    path: str
+    method: str
+    status_code: int
+    source_ip: Optional[str]
+    device_id: Optional[str]
+    user_agent: Optional[str]
+    created_at: datetime
+
+
+class ApiKeyCallLogListResponse(BaseModel):
+    items: List[ApiKeyCallLogResponse]
+    total: int
+
+
+class ApiKeyScopesResponse(BaseModel):
+    scopes: List[dict]
+
+
+class ApiKeyRevokeResponse(BaseModel):
+    message: str
+    id: int
+
 
 # ========== 令牌桶限流引擎 ==========
 import threading as _threading
@@ -1597,6 +1738,116 @@ def init_scheduler():
     finally:
         db.close()
 
+# ========== API Key 工具函数 ==========
+import secrets
+import hashlib
+
+def generate_api_key() -> tuple:
+    prefix = "pm-" + secrets.token_hex(API_KEY_PREFIX_LENGTH // 2)
+    secret = secrets.token_hex(API_KEY_SECRET_LENGTH // 2)
+    full_key = f"{prefix}.{secret}"
+    hashed = hashlib.sha256(full_key.encode()).hexdigest()
+    return prefix, full_key, hashed
+
+def hash_api_key(full_key: str) -> str:
+    return hashlib.sha256(full_key.encode()).hexdigest()
+
+def _get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+def _extract_request_device_id(request: Request) -> Optional[str]:
+    device_id = request.headers.get("X-Device-Id")
+    if device_id:
+        return device_id
+    try:
+        body = getattr(request.state, "_body_json", None)
+        if body and isinstance(body, dict) and "device_id" in body:
+            return str(body["device_id"])
+    except Exception:
+        pass
+    return None
+
+def _parse_scopes(scopes_json: str) -> List[str]:
+    try:
+        parsed = json.loads(scopes_json)
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+def _get_scope_names(scopes: List[str]) -> List[str]:
+    names = []
+    for s in scopes:
+        try:
+            scope_enum = ApiKeyScope(s)
+            names.append(SCOPE_NAMES.get(scope_enum, s))
+        except Exception:
+            names.append(s)
+    return names
+
+def _check_scope_permission(scopes: List[str], required_scope: str) -> bool:
+    if ApiKeyScope.ALL.value in scopes:
+        return True
+    return required_scope in scopes
+
+SCOPE_PATH_MAP = {
+    "GET": [
+        (r"^/api/hives($|/.*)", ApiKeyScope.HIVES_READ.value),
+        (r"^/api/sensor-data($|/.*)", ApiKeyScope.SENSOR_READ.value),
+        (r"^/api/operation-logs($|/.*)", ApiKeyScope.OPERATION_LOGS_READ.value),
+        (r"^/api/inspection-plans($|/.*)", ApiKeyScope.INSPECTION_PLANS_READ.value),
+    ],
+    "POST": [
+        (r"^/api/sensor-data($|/.*)", ApiKeyScope.SENSOR_WRITE.value),
+        (r"^/api/hives($|/.*)", ApiKeyScope.HIVES_WRITE.value),
+        (r"^/api/inspection-plans($|/.*)", ApiKeyScope.INSPECTION_PLANS_WRITE.value),
+    ],
+    "PUT": [
+        (r"^/api/hives($|/.*)", ApiKeyScope.HIVES_WRITE.value),
+        (r"^/api/inspection-plans($|/.*)", ApiKeyScope.INSPECTION_PLANS_WRITE.value),
+    ],
+    "DELETE": [
+        (r"^/api/hives($|/.*)", ApiKeyScope.HIVES_WRITE.value),
+    ],
+    "PATCH": [
+        (r"^/api/hives($|/.*)", ApiKeyScope.HIVES_WRITE.value),
+        (r"^/api/inspection-plans($|/.*)", ApiKeyScope.INSPECTION_PLANS_WRITE.value),
+    ],
+}
+
+def _check_path_scope(method: str, path: str, scopes: List[str]) -> bool:
+    if ApiKeyScope.ALL.value in scopes:
+        return True
+    method_rules = SCOPE_PATH_MAP.get(method.upper(), [])
+    matched_any = False
+    for pattern, required in method_rules:
+        if re.match(pattern, path):
+            matched_any = True
+            if required in scopes:
+                return True
+    return not matched_any
+
+def _make_api_key_response(key: ApiKey) -> ApiKeyResponse:
+    scopes = _parse_scopes(key.scopes)
+    return ApiKeyResponse(
+        id=key.id,
+        name=key.name,
+        key_prefix=key.key_prefix,
+        scopes=scopes,
+        scope_names=_get_scope_names(scopes),
+        expires_at=key.expires_at,
+        last_used_at=key.last_used_at,
+        bound_device_id=key.bound_device_id,
+        issuer_id=key.issuer_id,
+        issuer_username=key.issuer.username if key.issuer else "unknown",
+        is_revoked=key.is_revoked,
+        revoked_at=key.revoked_at,
+        created_at=key.created_at,
+    )
+
+
 # 依赖项：获取当前登录用户
 async def get_current_user(
     token: Optional[str] = Depends(oauth2_scheme),
@@ -1690,6 +1941,100 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# API Key 认证中间件
+@app.middleware("http")
+async def api_key_auth_middleware(request: Request, call_next):
+    api_key_header = request.headers.get(API_KEY_HEADER)
+    status_code = 500
+    api_key_obj = None
+    scope_violation = False
+    device_mismatch = False
+    auth_via_apikey = False
+
+    if api_key_header and request.url.path.startswith("/api/"):
+        db = SessionLocal()
+        try:
+            hashed = hash_api_key(api_key_header.strip())
+            api_key_obj = db.query(ApiKey).filter(
+                ApiKey.hashed_key == hashed,
+                ApiKey.is_revoked == False
+            ).first()
+
+            if not api_key_obj:
+                response = JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"detail": "无效的 API Key"}
+                )
+                status_code = 401
+            elif api_key_obj.expires_at and api_key_obj.expires_at < datetime.utcnow():
+                response = JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"detail": "API Key 已过期"}
+                )
+                status_code = 401
+            else:
+                scopes = _parse_scopes(api_key_obj.scopes)
+                if not _check_path_scope(request.method, request.url.path, scopes):
+                    scope_violation = True
+                    response = JSONResponse(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        content={"detail": "API Key 权限不足，无法访问此接口"}
+                    )
+                    status_code = 403
+                else:
+                    request_device_id = _extract_request_device_id(request)
+                    if api_key_obj.bound_device_id and request_device_id:
+                        if api_key_obj.bound_device_id != request_device_id:
+                            device_mismatch = True
+                            response = JSONResponse(
+                                status_code=status.HTTP_403_FORBIDDEN,
+                                content={"detail": f"API Key 已绑定设备 {api_key_obj.bound_device_id}，当前设备 {request_device_id} 不匹配"}
+                            )
+                            status_code = 403
+                        else:
+                            auth_via_apikey = True
+                            request.state.api_key = api_key_obj
+                            request.state.api_key_scopes = scopes
+                            response = await call_next(request)
+                            status_code = response.status_code
+                    else:
+                        auth_via_apikey = True
+                        request.state.api_key = api_key_obj
+                        request.state.api_key_scopes = scopes
+                        response = await call_next(request)
+                        status_code = response.status_code
+        except Exception as e:
+            logger.error(f"API Key auth error: {e}")
+            response = JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"detail": "API Key 认证异常"}
+            )
+            status_code = 500
+        finally:
+            if api_key_obj and not (scope_violation and status_code == 403) and not (device_mismatch and status_code == 403):
+                try:
+                    api_key_obj.last_used_at = datetime.utcnow()
+                    call_log = ApiKeyCallLog(
+                        api_key_id=api_key_obj.id,
+                        path=request.url.path,
+                        method=request.method,
+                        status_code=status_code,
+                        source_ip=_get_client_ip(request),
+                        device_id=_extract_request_device_id(request),
+                        user_agent=request.headers.get("User-Agent"),
+                    )
+                    db.add(call_log)
+                    db.commit()
+                except Exception as log_err:
+                    logger.error(f"Failed to log API Key call: {log_err}")
+                    db.rollback()
+            db.close()
+        return response
+
+    response = await call_next(request)
+    return response
+
 
 # 依赖项：获取数据库会话
 def get_db():
@@ -3257,6 +3602,138 @@ async def unban_device(
     db.commit()
     logger.info(f"Device unbanned by {current_user.username}: {device_id}")
     return {"message": f"设备 {device_id} 已解封"}
+
+
+# ============ API Key 管理接口 ============
+
+@app.get("/api/api-keys/scopes", response_model=ApiKeyScopesResponse)
+async def list_api_key_scopes(
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    scopes_list = []
+    for scope in ApiKeyScope:
+        scopes_list.append({
+            "value": scope.value,
+            "name": SCOPE_NAMES.get(scope, scope.value),
+        })
+    return {"scopes": scopes_list}
+
+
+@app.post("/api/api-keys", response_model=ApiKeyCreatedResponse, status_code=status.HTTP_201_CREATED)
+async def create_api_key(
+    data: ApiKeyCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["create"])),
+):
+    prefix, full_key, hashed = generate_api_key()
+    expires_at = None
+    if data.expires_days:
+        expires_at = datetime.utcnow() + timedelta(days=data.expires_days)
+
+    scopes_json = json.dumps(data.scopes, ensure_ascii=False)
+    new_key = ApiKey(
+        name=data.name,
+        key_prefix=prefix,
+        hashed_key=hashed,
+        scopes=scopes_json,
+        expires_at=expires_at,
+        bound_device_id=data.bound_device_id,
+        issuer_id=current_user.id,
+    )
+    db.add(new_key)
+    db.commit()
+    db.refresh(new_key)
+
+    logger.info(f"API Key created by {current_user.username}: name={data.name}, prefix={prefix}")
+
+    scope_names = _get_scope_names(data.scopes)
+    return ApiKeyCreatedResponse(
+        id=new_key.id,
+        name=new_key.name,
+        key_prefix=prefix,
+        full_key=full_key,
+        scopes=data.scopes,
+        scope_names=scope_names,
+        expires_at=expires_at,
+        bound_device_id=data.bound_device_id,
+        created_at=new_key.created_at,
+    )
+
+
+@app.get("/api/api-keys", response_model=ApiKeyListResponse)
+async def list_api_keys(
+    include_revoked: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    query = db.query(ApiKey).filter(ApiKey.issuer_id == current_user.id)
+    if not include_revoked:
+        query = query.filter(ApiKey.is_revoked == False)
+    keys = query.order_by(ApiKey.created_at.desc()).all()
+    items = [_make_api_key_response(k) for k in keys]
+    return {"items": items, "total": len(items)}
+
+
+@app.delete("/api/api-keys/{key_id}", response_model=ApiKeyRevokeResponse)
+async def revoke_api_key(
+    key_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["delete"])),
+):
+    key = db.query(ApiKey).filter(
+        ApiKey.id == key_id,
+        ApiKey.issuer_id == current_user.id
+    ).first()
+    if not key:
+        raise HTTPException(status_code=404, detail="凭证不存在")
+    if key.is_revoked:
+        raise HTTPException(status_code=400, detail="凭证已被吊销")
+
+    key.is_revoked = True
+    key.revoked_at = datetime.utcnow()
+    key.revoked_by = current_user.id
+    db.commit()
+
+    logger.info(f"API Key revoked by {current_user.username}: id={key_id}, prefix={key.key_prefix}")
+    return ApiKeyRevokeResponse(message="凭证已成功吊销", id=key_id)
+
+
+@app.get("/api/api-keys/{key_id}/call-logs", response_model=ApiKeyCallLogListResponse)
+async def get_api_key_call_logs(
+    key_id: int,
+    page: int = 1,
+    size: int = 50,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permissions(["read"])),
+):
+    key = db.query(ApiKey).filter(
+        ApiKey.id == key_id,
+        ApiKey.issuer_id == current_user.id
+    ).first()
+    if not key:
+        raise HTTPException(status_code=404, detail="凭证不存在")
+
+    query = db.query(ApiKeyCallLog).filter(ApiKeyCallLog.api_key_id == key_id)
+    total = query.count()
+    logs = query.order_by(ApiKeyCallLog.created_at.desc()) \
+        .offset((page - 1) * size) \
+        .limit(size) \
+        .all()
+
+    items = [
+        ApiKeyCallLogResponse(
+            id=log.id,
+            path=log.path,
+            method=log.method,
+            status_code=log.status_code,
+            source_ip=log.source_ip,
+            device_id=log.device_id,
+            user_agent=log.user_agent,
+            created_at=log.created_at,
+        )
+        for log in logs
+    ]
+    return {"items": items, "total": total}
 
 
 if __name__ == "__main__":

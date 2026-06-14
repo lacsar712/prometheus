@@ -204,5 +204,14 @@ export const rateLimitApi = {
     submitSensorData: (data) => api.post('/api/sensor-data', data),
 };
 
+export const apiKeyApi = {
+    getScopes: () => api.get('/api/api-keys/scopes'),
+    list: (includeRevoked = false) => api.get('/api/api-keys', { params: { include_revoked: includeRevoked } }),
+    create: (data) => api.post('/api/api-keys', data),
+    revoke: (id) => api.delete(`/api/api-keys/${id}`),
+    getCallLogs: (id, page = 1, size = 50) =>
+        api.get(`/api/api-keys/${id}/call-logs`, { params: { page, size } }),
+};
+
 export { api, API_BASE_URL, TOKEN_KEY, REFRESH_TOKEN_KEY, clearAuthAndRedirect };
 export default api;

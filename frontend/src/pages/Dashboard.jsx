@@ -26,6 +26,7 @@ import {
     MessageCircle,
     CalendarClock,
     ShieldAlert,
+    Key,
 } from 'lucide-react';
 import CommentDrawer from '../components/CommentDrawer';
 import { toast } from 'react-toastify';
@@ -262,6 +263,21 @@ function Dashboard() {
                                     <p className="text-xs text-slate-500 mt-1">令牌限流 · 设备封禁</p>
                                 </div>
                                 <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-rose-400 transition-colors" />
+                            </Link>
+                        )}
+                        {canRead && (
+                            <Link
+                                to="/api-keys"
+                                className="group flex flex-col items-center gap-3 p-5 rounded-2xl bg-slate-800/50 hover:bg-indigo-500/10 border border-slate-700 hover:border-indigo-500/30 transition-all"
+                            >
+                                <div className="p-3 bg-indigo-500/20 rounded-xl group-hover:scale-110 transition-transform">
+                                    <Key className="w-6 h-6 text-indigo-400" />
+                                </div>
+                                <div className="text-center">
+                                    <p className="font-medium text-white">API Keys</p>
+                                    <p className="text-xs text-slate-500 mt-1">设备凭证 · SaaS 接入</p>
+                                </div>
+                                <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-indigo-400 transition-colors" />
                             </Link>
                         )}
                     </div>
